@@ -1,0 +1,311 @@
+"""Maze environment + RenderMaze.
+
+Ported from `001-maze-rl/003-environment/maze.py` with fixes:
+- find_empty_cell allows the start cell (was buggy: maze[1,1]==2 so cell never
+  matched maze==1 and the loop infinite-spun).
+- step() reward shaping cleaner; off-grid prevented before lookup.
+RenderMaze extended with:
+- Q-value overlay (best=green, worst=red) ported from legacy generate_maze.py.
+- save(path, fmt='gif'|'webp'|'mp4', frame_skip, max_frames).
+- Per-agent tint for n_agents>1.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+
+HOLE, LAND, START, EXIT = 0, 1, 2, 3
+SPRITE_HOLE, SPRITE_LAND, SPRITE_LAVA, SPRITE_EXIT, SPRITE_AGENT = 0, 1, 2, 3, 4
+
+# Per-agent tints for multi-agent renders; index 0 = no tint.
+_AGENT_TINTS = [None, (255, 80, 80), (80, 255, 80), (80, 160, 255), (255, 200, 60)]
+
+
+class MazeEnvironment:
+    metadata = {"render.modes": ["human"]}
+
+    def __init__(self, width: int = 10, height: int = 10, n_agents: int = 1,
+                 density: float = 0.2, seed: Optional[int] = None):
+        self.width = int(width)
+        self.height = int(height)
+        self.density = float(density)
+        self.n_agents = int(n_agents)
+        self._rng = np.random.default_rng(seed)
+        self.action_size = 4
+
+        self.maze = self._generate_maze()
+        self.start_pos = tuple(map(int, np.argwhere(self.maze == START)[0]))
+        self.treasure_pos = tuple(map(int, np.argwhere(self.maze == EXIT)[0]))
+        self.agent_positions: List[Tuple[int, int]] = []
+        self.reset()
+
+    def _generate_maze(self) -> np.ndarray:
+        maze = self._rng.choice([HOLE, LAND], size=(self.height, self.width),
+                                p=[self.density, 1 - self.density]).astype(np.uint8)
+        maze[0, :] = maze[-1, :] = maze[:, 0] = maze[:, -1] = HOLE
+        maze[1, 1] = START
+        maze[self.height - 2, self.width - 2] = EXIT
+        return maze
+
+    def _find_empty_cell(self, taken: Sequence[Tuple[int, int]]) -> Tuple[int, int]:
+        candidates = [(i, j) for i in range(1, self.height - 1)
+                      for j in range(1, self.width - 1)
+                      if self.maze[i, j] in (LAND, START) and (i, j) not in taken]
+        if not candidates:
+            return self.start_pos
+        return tuple(candidates[self._rng.integers(len(candidates))])
+
+    def reset(self) -> np.ndarray:
+        self.agent_positions = []
+        for _ in range(self.n_agents):
+            self.agent_positions.append(self._find_empty_cell(self.agent_positions))
+        # Make agent 0 start at start_pos when possible.
+        if self.maze[self.start_pos] != HOLE:
+            taken = set(self.agent_positions[1:])
+            if self.start_pos not in taken:
+                self.agent_positions[0] = self.start_pos
+        return self.get_observation()
+
+    def get_observation(self) -> np.ndarray:
+        obs = self.maze.copy()
+        for i, pos in enumerate(self.agent_positions):
+            obs[pos] = 4 + i
+        return obs
+
+    def step(self, actions: Union[int, Sequence[int]]):
+        if self.n_agents == 1 and isinstance(actions, (int, np.integer)):
+            actions = [int(actions)]
+        actions = list(actions)
+        assert len(actions) == self.n_agents
+
+        rewards, dones = [], []
+        for i, action in enumerate(actions):
+            r, c = self.agent_positions[i]
+            nr, nc = r, c
+            if action == 0:   nr = max(0, r - 1)
+            elif action == 1: nc = min(self.width - 1, c + 1)
+            elif action == 2: nr = min(self.height - 1, r + 1)
+            elif action == 3: nc = max(0, c - 1)
+
+            target = (nr, nc)
+            blocked = self.maze[target] == HOLE or target in self.agent_positions
+            if blocked:
+                target = (r, c)
+                reward = -0.1
+                done = False
+            elif target == self.treasure_pos:
+                reward, done = 1.0, True
+            else:
+                reward, done = -0.01, False
+
+            self.agent_positions[i] = target
+            rewards.append(reward)
+            dones.append(done)
+
+        info = {}
+        if self.n_agents == 1:
+            return self.get_observation(), rewards[0], dones[0], info
+        return self.get_observation(), rewards, dones, info
+
+    def get_possible_actions(self) -> List[int]:
+        return [0, 1, 2, 3]
+
+    def render(self, mode: str = "human"):
+        if mode != "human":
+            return self.get_observation()
+        glyph = {HOLE: "█", LAND: "·", START: "S", EXIT: "T"}
+        for i in range(self.height):
+            row = []
+            for j in range(self.width):
+                if (i, j) in self.agent_positions:
+                    row.append(f"A{self.agent_positions.index((i, j))}")
+                else:
+                    row.append(glyph.get(int(self.maze[i, j]), "?"))
+            print(" ".join(row))
+        print()
+
+
+# ---------------------------------------------------------------------------
+# RenderMaze
+# ---------------------------------------------------------------------------
+
+
+class RenderMaze:
+    """Assemble sprite-tiled frames of maze states and save as GIF/WebP/MP4.
+
+    Frames are produced from (maze_state, agent_position_or_positions) tuples
+    pushed via .add(). Q-values, if supplied, are overlaid on the frame.
+    """
+
+    def __init__(self, cropped_images: List[Image.Image]):
+        if len(cropped_images) < 5:
+            raise ValueError(
+                f"Expected >=5 cropped sprites (HOLE,LAND,LAVA,EXIT,AGENT), "
+                f"got {len(cropped_images)}"
+            )
+        if not all(isinstance(im, Image.Image) for im in cropped_images):
+            raise TypeError("All sprites must be PIL Image instances")
+        self.sprites = cropped_images
+        self.frames: List[Tuple[np.ndarray, object, Optional[np.ndarray]]] = []
+
+    def add(self, maze: np.ndarray, position, q_values: Optional[np.ndarray] = None):
+        self.frames.append((np.asarray(maze).copy(), position,
+                            None if q_values is None else np.asarray(q_values).copy()))
+
+    def __len__(self):
+        return len(self.frames)
+
+    def _tile(self, maze: np.ndarray, sprite_size: int) -> Image.Image:
+        h, w = maze.shape
+        canvas = Image.new("RGBA", (w * sprite_size, h * sprite_size))
+        for i in range(h):
+            for j in range(w):
+                v = int(maze[i, j])
+                if v >= 4:        idx = SPRITE_AGENT
+                elif v == HOLE:   idx = SPRITE_HOLE
+                elif v == EXIT:   idx = SPRITE_EXIT
+                else:             idx = SPRITE_LAND
+                sp = self.sprites[idx]
+                if sp.size != (sprite_size, sprite_size):
+                    sp = sp.resize((sprite_size, sprite_size), Image.LANCZOS)
+                canvas.paste(sp.convert("RGBA"), (j * sprite_size, i * sprite_size))
+                if v >= 4:
+                    tint = _AGENT_TINTS[(v - 4) % len(_AGENT_TINTS)]
+                    if tint is not None:
+                        overlay = Image.new("RGBA", (sprite_size, sprite_size),
+                                            tint + (90,))
+                        canvas.alpha_composite(overlay, (j * sprite_size, i * sprite_size))
+        return canvas
+
+    def _overlay_q(self, frame: Image.Image, q: np.ndarray, sprite_size: int,
+                   step: int):
+        draw = ImageDraw.Draw(frame)
+        try:
+            font = ImageFont.truetype("Arial.ttf", max(10, sprite_size // 3))
+        except OSError:
+            font = ImageFont.load_default()
+        labels = ["UP", "RT", "DN", "LF"]
+        best = int(np.argmax(q))
+        worst = int(np.argmin(q))
+        x0 = 4
+        y0 = 4
+        for i, (lab, val) in enumerate(zip(labels, q)):
+            color = (80, 220, 80) if i == best else (220, 80, 80) if i == worst else (240, 240, 240)
+            draw.text((x0, y0 + i * (sprite_size // 3 + 2)),
+                      f"{lab} {val:+.2f}", fill=color, font=font)
+        draw.text((frame.size[0] - 60, 4), f"t={step}", fill=(255, 255, 255), font=font)
+
+    def render_frames(self, sprite_size: int = 32,
+                      frame_skip: int = 1, max_frames: Optional[int] = None
+                      ) -> List[Image.Image]:
+        if not self.frames:
+            return []
+        keep_idx = self._frame_indices(frame_skip, max_frames)
+        out = []
+        for k, idx in enumerate(keep_idx):
+            maze, pos, q = self.frames[idx]
+            m = maze.copy()
+            positions = pos if isinstance(pos, list) else [pos]
+            for ai, p in enumerate(positions):
+                if p is not None:
+                    m[p] = 4 + ai
+            img = self._tile(m, sprite_size).convert("RGB")
+            if q is not None:
+                self._overlay_q(img, q, sprite_size, step=idx)
+            out.append(img)
+        return out
+
+    def _frame_indices(self, frame_skip: int, max_frames: Optional[int]) -> List[int]:
+        n = len(self.frames)
+        idxs = list(range(0, n, max(1, int(frame_skip))))
+        if idxs and idxs[-1] != n - 1:
+            idxs.append(n - 1)
+        if max_frames and len(idxs) > max_frames:
+            stride = len(idxs) / max_frames
+            idxs = [idxs[int(i * stride)] for i in range(max_frames)]
+            if idxs[-1] != n - 1:
+                idxs[-1] = n - 1
+        return idxs
+
+    def save(self, path: str, fmt: str = "webp", sprite_size: int = 32,
+             frame_duration_ms: int = 80, frame_skip: int = 1,
+             max_frames: Optional[int] = None) -> str:
+        """Render and write the animation to `path`. Returns the output path."""
+        frames = self.render_frames(sprite_size, frame_skip, max_frames)
+        if not frames:
+            raise RuntimeError("No frames to save (call .add() first).")
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fmt = fmt.lower()
+        if fmt == "gif":
+            frames[0].save(path, format="GIF", save_all=True,
+                           append_images=frames[1:], duration=frame_duration_ms,
+                           loop=0, optimize=True, disposal=2)
+        elif fmt == "webp":
+            frames[0].save(path, format="WEBP", save_all=True,
+                           append_images=frames[1:], duration=frame_duration_ms,
+                           loop=0, quality=70, method=4)
+        elif fmt == "mp4":
+            try:
+                import imageio.v2 as imageio
+            except Exception as e:
+                raise RuntimeError(
+                    "MP4 output requires `imageio[ffmpeg]`. "
+                    "Install with `pip install imageio[ffmpeg]`."
+                ) from e
+            fps = max(1, int(round(1000 / max(1, frame_duration_ms))))
+            with imageio.get_writer(path, fps=fps, codec="libx264",
+                                    quality=8) as w:
+                for f in frames:
+                    w.append_data(np.asarray(f))
+        else:
+            raise ValueError(f"Unknown format: {fmt}")
+        return path
+
+    # Back-compat shim with old API (timestamped filename in cwd).
+    def show(self, sprite_size: int = 32, gif_duration: int = 60) -> str:
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = f"moving_maze_{ts}.gif"
+        return self.save(path, fmt="gif", sprite_size=sprite_size,
+                         frame_duration_ms=gif_duration)
+
+    @staticmethod
+    def crop_images(input_path: str, image_names: List[str],
+                    tile_h: int = 16, tile_w: int = 16, sprite_size: int = 32,
+                    return_indexes: Optional[List[int]] = None) -> List[Image.Image]:
+        out: List[Image.Image] = []
+        for name in image_names:
+            with Image.open(os.path.join(input_path, name)) as im:
+                iw, ih = im.size
+                for y in range(0, ih, tile_h):
+                    for x in range(0, iw, tile_w):
+                        crop = im.crop((x, y, x + tile_w, y + tile_h))
+                        out.append(crop.resize((sprite_size, sprite_size),
+                                               Image.LANCZOS).copy())
+        if return_indexes is not None:
+            return [out[i] for i in return_indexes]
+        return out
+
+    @staticmethod
+    def placeholder_sprites(sprite_size: int = 32) -> List[Image.Image]:
+        """Fallback solid-color sprites when no sprite sheet is provided."""
+        palette = {
+            SPRITE_HOLE:  (30, 30, 30),
+            SPRITE_LAND:  (200, 200, 200),
+            SPRITE_LAVA:  (220, 80, 30),
+            SPRITE_EXIT:  (240, 200, 40),
+            SPRITE_AGENT: (60, 130, 220),
+        }
+        out = []
+        for i in range(5):
+            img = Image.new("RGBA", (sprite_size, sprite_size), palette[i] + (255,))
+            d = ImageDraw.Draw(img)
+            d.rectangle([0, 0, sprite_size - 1, sprite_size - 1],
+                        outline=(0, 0, 0, 255), width=1)
+            out.append(img)
+        return out
