@@ -2,10 +2,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
 from base_agent import BaseAgent
-from replay_buffer import ReplayBuffer
 from nets import CNNHead, MLPHead
+from replay_buffer import ReplayBuffer
 
 
 class DQNAgent(BaseAgent):

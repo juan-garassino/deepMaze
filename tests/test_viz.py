@@ -1,13 +1,14 @@
-import os
 
 import numpy as np
 import pytest
-
 from maze import MazeEnvironment, RenderMaze
-from viz_events import (EventBus, EpisodeEvent, PolicyEvent, RunEvent,
-                        StepEvent)
-from visualizations import (plot_policy_heatmap, plot_training_curves,
-                            plot_visitation, plot_reward_landscape)
+from visualizations import (
+    plot_policy_heatmap,
+    plot_reward_landscape,
+    plot_training_curves,
+    plot_visitation,
+)
+from viz_events import EpisodeEvent, EventBus, RunEvent, StepEvent
 
 
 def _ep(i, r=1.0, l=10, eps=0.1, loss=None, success=True):

@@ -1,10 +1,9 @@
 """DRQN trains on partial-view maze without errors."""
 
-import numpy as np
 
 from maze import MazeEnvironment
-from train import create_agent, train_agent, simulate_episode
 from seeding import seed_everything
+from train import create_agent, simulate_episode, train_agent
 
 
 def test_drqn_partial_view_smoke():

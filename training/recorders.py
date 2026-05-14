@@ -7,16 +7,15 @@ back to training code — adding a new recorder means one .subscribe() call.
 from __future__ import annotations
 
 import sys
-from typing import List, Optional, Tuple
 
-from viz_events import EpisodeEvent, PolicyEvent, RunEvent, StepEvent
+from viz_events import EpisodeEvent, RunEvent, StepEvent
 
 
 class MetricsCollector:
     """Buffers EpisodeEvents for later plotting."""
 
     def __init__(self):
-        self.episodes: List[EpisodeEvent] = []
+        self.episodes: list[EpisodeEvent] = []
 
     def __call__(self, event):
         if isinstance(event, EpisodeEvent):
@@ -27,9 +26,9 @@ class TrajectoryCollector:
     """Buffers (episode -> list of positions) for visitation heatmap."""
 
     def __init__(self):
-        self.trajectories: List[List[Tuple[int, int]]] = []
-        self._current: List[Tuple[int, int]] = []
-        self._ep: Optional[int] = None
+        self.trajectories: list[list[tuple[int, int]]] = []
+        self._current: list[tuple[int, int]] = []
+        self._ep: int | None = None
 
     def __call__(self, event):
         if isinstance(event, StepEvent):

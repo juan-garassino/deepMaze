@@ -17,16 +17,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import pickle
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class MazeManager:
-    def __init__(self, base_dir: str = "maze_rl_runs", run_id: Optional[str] = None):
+    def __init__(self, base_dir: str = "maze_rl_runs", run_id: str | None = None):
         self.base_dir = Path(base_dir)
         ts = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.run_id = ts
@@ -68,14 +67,14 @@ class MazeManager:
     # ------------------------------------------------------------------
     # artifacts
     # ------------------------------------------------------------------
-    def save_config(self, config: Dict[str, Any]) -> Path:
+    def save_config(self, config: dict[str, Any]) -> Path:
         p = self.run_dir / "config.json"
         with open(p, "w") as f:
             json.dump({k: _jsonable(v) for k, v in config.items()}, f, indent=2)
         self.log(f"Config saved to {p}")
         return p
 
-    def save_results(self, results: Dict[str, Any]) -> Path:
+    def save_results(self, results: dict[str, Any]) -> Path:
         p = self.run_dir / "results.json"
         with open(p, "w") as f:
             json.dump({k: _jsonable(v) for k, v in results.items()}, f, indent=2)
@@ -109,7 +108,7 @@ class MazeManager:
         self.log(f"GIF copied to {dst}")
         return dst
 
-    def save_curves(self, episodes: List[Any]) -> Path:
+    def save_curves(self, episodes: list[Any]) -> Path:
         from visualizations import plot_training_curves  # lazy
         out = self.viz_dir() / "curves.png"
         plot_training_curves(episodes, str(out))
@@ -146,7 +145,7 @@ class MazeManager:
         self.log(f"Policy heatmap saved to {out}")
         return out
 
-    def save_visitation(self, trajectories: List[List], env) -> Path:
+    def save_visitation(self, trajectories: list[list], env) -> Path:
         from visualizations import plot_visitation
         out = self.viz_dir() / "visitation.png"
         plot_visitation(trajectories, env, str(out))

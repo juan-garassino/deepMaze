@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import queue
 import threading
-from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, List, Optional, Tuple
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -20,11 +21,11 @@ class StepEvent:
     episode: int
     step: int
     state: np.ndarray
-    position: Tuple[int, int]
+    position: tuple[int, int]
     action: int
     reward: float
     done: bool
-    q_values: Optional[np.ndarray] = None
+    q_values: np.ndarray | None = None
 
     def to_json(self) -> dict:
         """Backwards-compat: full payload. Prefer to_json_delta for live SSE."""
@@ -62,7 +63,7 @@ class EpisodeEvent:
     total_reward: float
     length: int
     epsilon: float
-    loss: Optional[float] = None
+    loss: float | None = None
     success: bool = False
 
     def to_json(self) -> dict:
@@ -100,8 +101,8 @@ class EventBus:
     """
 
     def __init__(self) -> None:
-        self._handlers: List[Callable[[VizEvent], None]] = []
-        self._queues: List[queue.Queue] = []
+        self._handlers: list[Callable[[VizEvent], None]] = []
+        self._queues: list[queue.Queue] = []
         self._lock = threading.Lock()
 
     def subscribe(self, fn: Callable[[VizEvent], None]) -> Callable[[], None]:

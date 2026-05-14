@@ -1,10 +1,9 @@
 """CNN backbone runs end-to-end on full-view and partial-view obs."""
 
 import pytest
-
 from maze import MazeEnvironment
-from train import create_agent, train_agent, simulate_episode
 from seeding import seed_everything
+from train import create_agent, simulate_episode, train_agent
 
 
 @pytest.mark.parametrize("agent_type", ["dqn", "ppo"])

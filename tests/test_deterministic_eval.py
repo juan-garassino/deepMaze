@@ -1,8 +1,7 @@
-import numpy as np
 
 from maze import MazeEnvironment
-from train import create_agent, train_agent
 from seeding import seed_everything
+from train import create_agent, train_agent
 
 
 def test_ppo_deterministic_action_stable():

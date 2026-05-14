@@ -6,7 +6,8 @@ StepEvent sequences). Headless-friendly via Agg backend.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, List, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -24,8 +25,8 @@ def _plt():
 # --------------------------------------------------------------------------
 
 
-def _ema(xs: Sequence[float], alpha: float = 0.1) -> List[float]:
-    out: List[float] = []
+def _ema(xs: Sequence[float], alpha: float = 0.1) -> list[float]:
+    out: list[float] = []
     cur = None
     for x in xs:
         cur = x if cur is None else (1 - alpha) * cur + alpha * x
@@ -33,7 +34,7 @@ def _ema(xs: Sequence[float], alpha: float = 0.1) -> List[float]:
     return out
 
 
-def plot_training_curves(episodes: List[Any], out_path: str) -> str:
+def plot_training_curves(episodes: list[Any], out_path: str) -> str:
     plt = _plt()
     if not episodes:
         fig, ax = plt.subplots(figsize=(6, 3))
@@ -115,10 +116,12 @@ def plot_policy_heatmap(q_source, env, out_path: str) -> str:
         # Build one observation per non-wall cell, batch through the agent.
         cells = [(i, j) for i in range(h) for j in range(w)
                  if env.maze[i, j] != 0]
-        obs_batch = np.stack([
-            (lambda o: (o.__setitem__((i, j), 5) or o))(env.maze.copy())
-            for (i, j) in cells
-        ])
+        obs_list = []
+        for (i, j) in cells:
+            o = env.maze.copy()
+            o[i, j] = 5  # AGENT_BASE
+            obs_list.append(o)
+        obs_batch = np.stack(obs_list)
         if hasattr(q_source, "q_values_batch"):
             qs = q_source.q_values_batch(obs_batch)
         else:
@@ -168,7 +171,7 @@ def plot_policy_heatmap(q_source, env, out_path: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def plot_visitation(trajectories: List[List[Tuple[int, int]]], env, out_path: str) -> str:
+def plot_visitation(trajectories: list[list[tuple[int, int]]], env, out_path: str) -> str:
     plt = _plt()
     h, w = env.height, env.width
     counts = np.zeros((h, w))
@@ -207,7 +210,7 @@ def plot_behavioral_rollout(agent, env, out_path: str,
     actually *does*. Honest about behaviour, no state-key lookup needed.
     """
     plt = _plt()
-    from maze import HOLE, LAVA, AGENT_BASE
+    from maze import HOLE, LAVA
 
     h, w = env.height, env.width
     arrows = np.full((h, w), -1, dtype=int)

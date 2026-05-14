@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
-
 import numpy as np
-
-from maze import MazeEnvironment
-from q_agent import QAgent
 from dqn_agent import DQNAgent
-from ppo_agent import PPOAgent
 from drqn_agent import DRQNAgent
-from viz_events import EventBus, EpisodeEvent, PolicyEvent, RunEvent, StepEvent
+from maze import MazeEnvironment
+from ppo_agent import PPOAgent
+from q_agent import QAgent
+from viz_events import EpisodeEvent, EventBus, PolicyEvent, RunEvent, StepEvent
 
 
 def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
@@ -38,7 +35,7 @@ def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
 
 
 def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
-                bus: Optional[EventBus] = None,
+                bus: EventBus | None = None,
                 policy_snapshot_every: int = 50,
                 emit_steps: bool = True,
                 emit_q_values: bool = False,
@@ -97,13 +94,13 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
 
 def simulate_episode(env: MazeEnvironment, agent, max_steps: int,
                      at_start: bool = False
-                     ) -> Tuple[List[np.ndarray], List[Tuple[int, int]], List[int], float]:
+                     ) -> tuple[list[np.ndarray], list[tuple[int, int]], list[int], float]:
     state = env.reset(at_start=at_start) if at_start else env.reset()
     if hasattr(agent, "on_episode_start"):
         agent.on_episode_start()
     states = [state.copy()]
-    positions: List[Tuple[int, int]] = [env.agent_positions[0]]
-    actions: List[int] = []
+    positions: list[tuple[int, int]] = [env.agent_positions[0]]
+    actions: list[int] = []
     total = 0.0
     for _ in range(max_steps):
         action = agent.move(state)
@@ -120,7 +117,7 @@ def simulate_episode(env: MazeEnvironment, agent, max_steps: int,
 
 def evaluate_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                    deterministic: bool = True
-                   ) -> Tuple[float, float, float]:
+                   ) -> tuple[float, float, float]:
     rewards, lengths, successes = [], [], 0
     prev = getattr(agent, "deterministic", False)
     if deterministic:

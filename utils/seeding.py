@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import os
 import random
-from typing import Optional
 
 
-def seed_everything(seed: Optional[int]) -> Optional[int]:
+def seed_everything(seed: int | None) -> int | None:
     if seed is None:
         return None
     seed = int(seed)

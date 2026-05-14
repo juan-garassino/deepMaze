@@ -1,6 +1,6 @@
-import numpy as np
 from collections import defaultdict
 
+import numpy as np
 from base_agent import BaseAgent
 
 

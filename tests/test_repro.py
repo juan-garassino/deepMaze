@@ -1,12 +1,9 @@
 """Same seed → same trajectory + same eval."""
 
-import numpy as np
 import pytest
-
 from maze import MazeEnvironment
-from train import create_agent, train_agent, simulate_episode, evaluate_agent
 from seeding import seed_everything
-
+from train import create_agent, evaluate_agent, simulate_episode, train_agent
 
 _TINY = {"q": {"learning_rate": 0.5},
          "dqn": {"batch_size": 16, "buffer_capacity": 128},

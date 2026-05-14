@@ -2,14 +2,12 @@
 Convergence is NOT asserted — these tests prove plumbing, not RL quality.
 """
 
-import numpy as np
 import pytest
-
 from maze import MazeEnvironment, RenderMaze
-from train import create_agent, train_agent, evaluate_agent, simulate_episode
-from viz_events import EventBus
 from recorders import MetricsCollector, TrajectoryCollector
 from seeding import seed_everything
+from train import create_agent, evaluate_agent, simulate_episode, train_agent
+from viz_events import EventBus
 
 
 @pytest.mark.parametrize("agent_type,episodes,extra", [

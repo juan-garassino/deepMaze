@@ -1,0 +1,27 @@
+[project]
+name = "deepmaze"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["maze_rl_runs", "web/static"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length (handled by formatter)
+    "E701",  # one-line "if X: y" (used in dispatch tables)
+    "E702",  # ax.set_xticks([]); ax.set_yticks([]) — common matplotlib pattern
+    "E741",  # ambiguous variable names (h, w, l common in this domain)
+    "B007",  # unused loop variables
+    "B008",  # do not perform function call in argument defaults
+    "B905",  # zip(strict=) — not required for our use
+]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

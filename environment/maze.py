@@ -13,11 +13,10 @@ RenderMaze extended with:
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-
 
 HOLE, LAND, START, EXIT, LAVA = 0, 1, 2, 3, 4
 AGENT_BASE = 5  # agents are encoded as AGENT_BASE + agent_index
@@ -31,10 +30,10 @@ class MazeEnvironment:
     metadata = {"render.modes": ["human"]}
 
     def __init__(self, width: int = 10, height: int = 10, n_agents: int = 1,
-                 density: float = 0.2, seed: Optional[int] = None,
+                 density: float = 0.2, seed: int | None = None,
                  generator: str = "random", ensure_solvable: bool = True,
                  n_lava: int = 0, lava_reward: float = -1.0,
-                 partial_view: Optional[int] = None):
+                 partial_view: int | None = None):
         if width < 5 or height < 5:
             raise ValueError("Maze must be at least 5x5")
         self.width = int(width)
@@ -59,7 +58,7 @@ class MazeEnvironment:
         self.maze[self.treasure_pos] = EXIT
         if self.n_lava > 0:
             self._place_lava(self.n_lava)
-        self.agent_positions: List[Tuple[int, int]] = []
+        self.agent_positions: list[tuple[int, int]] = []
         self.reset()
 
     # ------------------------------------------------------------------
@@ -133,7 +132,7 @@ class MazeEnvironment:
     # ------------------------------------------------------------------
     # solvability
     # ------------------------------------------------------------------
-    def _connected(self, src: Tuple[int, int], dst: Tuple[int, int]) -> bool:
+    def _connected(self, src: tuple[int, int], dst: tuple[int, int]) -> bool:
         import collections
         h, w = self.height, self.width
         seen = {src}; q = collections.deque([src])
@@ -216,7 +215,7 @@ class MazeEnvironment:
         for (i, j) in candidates[:n]:
             self.maze[i, j] = LAVA
 
-    def _find_empty_cell(self, taken: Sequence[Tuple[int, int]]) -> Tuple[int, int]:
+    def _find_empty_cell(self, taken: Sequence[tuple[int, int]]) -> tuple[int, int]:
         candidates = [(i, j) for i in range(1, self.height - 1)
                       for j in range(1, self.width - 1)
                       if self.maze[i, j] in (LAND, START) and (i, j) not in taken]
@@ -262,7 +261,7 @@ class MazeEnvironment:
                     out[di + K, dj + K] = full[rr, cc]
         return out
 
-    def step(self, actions: Union[int, Sequence[int]]):
+    def step(self, actions: int | Sequence[int]):
         if self.n_agents == 1 and isinstance(actions, (int, np.integer)):
             actions = [int(actions)]
         actions = list(actions)
@@ -300,7 +299,7 @@ class MazeEnvironment:
             return self.get_observation(), rewards[0], dones[0], info
         return self.get_observation(), rewards, dones, info
 
-    def get_possible_actions(self) -> List[int]:
+    def get_possible_actions(self) -> list[int]:
         return [0, 1, 2, 3]
 
     def render(self, mode: str = "human"):
@@ -330,7 +329,7 @@ class RenderMaze:
     pushed via .add(). Q-values, if supplied, are overlaid on the frame.
     """
 
-    def __init__(self, cropped_images: List[Image.Image]):
+    def __init__(self, cropped_images: list[Image.Image]):
         if len(cropped_images) < 5:
             raise ValueError(
                 f"Expected >=5 cropped sprites (HOLE,LAND,LAVA,EXIT,AGENT), "
@@ -339,9 +338,9 @@ class RenderMaze:
         if not all(isinstance(im, Image.Image) for im in cropped_images):
             raise TypeError("All sprites must be PIL Image instances")
         self.sprites = cropped_images
-        self.frames: List[Tuple[np.ndarray, object, Optional[np.ndarray]]] = []
+        self.frames: list[tuple[np.ndarray, object, np.ndarray | None]] = []
 
-    def add(self, maze: np.ndarray, position, q_values: Optional[np.ndarray] = None):
+    def add(self, maze: np.ndarray, position, q_values: np.ndarray | None = None):
         self.frames.append((np.asarray(maze).copy(), position,
                             None if q_values is None else np.asarray(q_values).copy()))
 
@@ -390,8 +389,8 @@ class RenderMaze:
         draw.text((frame.size[0] - 60, 4), f"t={step}", fill=(255, 255, 255), font=font)
 
     def render_frames(self, sprite_size: int = 32,
-                      frame_skip: int = 1, max_frames: Optional[int] = None
-                      ) -> List[Image.Image]:
+                      frame_skip: int = 1, max_frames: int | None = None
+                      ) -> list[Image.Image]:
         if not self.frames:
             return []
         keep_idx = self._frame_indices(frame_skip, max_frames)
@@ -438,7 +437,7 @@ class RenderMaze:
             out.append(img)
         return out
 
-    def _frame_indices(self, frame_skip: int, max_frames: Optional[int]) -> List[int]:
+    def _frame_indices(self, frame_skip: int, max_frames: int | None) -> list[int]:
         n = len(self.frames)
         idxs = list(range(0, n, max(1, int(frame_skip))))
         if idxs and idxs[-1] != n - 1:
@@ -452,7 +451,7 @@ class RenderMaze:
 
     def save(self, path: str, fmt: str = "webp", sprite_size: int = 32,
              frame_duration_ms: int = 80, frame_skip: int = 1,
-             max_frames: Optional[int] = None) -> str:
+             max_frames: int | None = None) -> str:
         """Render and write the animation to `path`. Returns the output path."""
         frames = self.render_frames(sprite_size, frame_skip, max_frames)
         if not frames:
@@ -493,10 +492,10 @@ class RenderMaze:
                          frame_duration_ms=gif_duration)
 
     @staticmethod
-    def crop_images(input_path: str, image_names: List[str],
+    def crop_images(input_path: str, image_names: list[str],
                     tile_h: int = 16, tile_w: int = 16, sprite_size: int = 32,
-                    return_indexes: Optional[List[int]] = None) -> List[Image.Image]:
-        out: List[Image.Image] = []
+                    return_indexes: list[int] | None = None) -> list[Image.Image]:
+        out: list[Image.Image] = []
         for name in image_names:
             with Image.open(os.path.join(input_path, name)) as im:
                 iw, ih = im.size
@@ -510,7 +509,7 @@ class RenderMaze:
         return out
 
     @staticmethod
-    def placeholder_sprites(sprite_size: int = 32) -> List[Image.Image]:
+    def placeholder_sprites(sprite_size: int = 32) -> list[Image.Image]:
         """Fallback solid-color sprites when no sprite sheet is provided."""
         palette = {
             SPRITE_HOLE:  (30, 30, 30),

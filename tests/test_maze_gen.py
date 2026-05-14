@@ -1,7 +1,5 @@
-import numpy as np
 import pytest
-
-from maze import MazeEnvironment, HOLE
+from maze import HOLE, MazeEnvironment
 
 
 @pytest.mark.parametrize("generator", ["random", "dfs", "open"])
@@ -44,6 +42,6 @@ def test_open_has_no_interior_walls():
 def test_start_and_treasure_marked():
     env = MazeEnvironment(10, 10, seed=0)
     sr, sc = env.start_pos; tr, tc = env.treasure_pos
-    from maze import START, EXIT
+    from maze import EXIT, START
     assert env.maze[sr, sc] == START
     assert env.maze[tr, tc] == EXIT

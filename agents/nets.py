@@ -11,7 +11,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-
 # Cell-value vocabulary used to size the one-hot channel stack.
 #   0 HOLE  1 LAND  2 START  3 EXIT  4 LAVA  5+ AGENT
 VOCAB = 6

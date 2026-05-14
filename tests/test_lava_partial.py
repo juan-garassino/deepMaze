@@ -1,7 +1,5 @@
-import numpy as np
-import pytest
 
-from maze import MazeEnvironment, LAVA, HOLE, LAND, START, EXIT, AGENT_BASE
+from maze import AGENT_BASE, HOLE, LAVA, MazeEnvironment
 
 
 def test_lava_placed_off_shortest_path():

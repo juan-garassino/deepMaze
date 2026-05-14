@@ -15,13 +15,12 @@ for sub in ("agents", "environment", "training", "utils", "web", "config"):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from maze import MazeEnvironment, RenderMaze   # noqa: E402
-from manager import MazeManager                # noqa: E402
-from train import create_agent, train_agent, evaluate_agent, simulate_episode  # noqa: E402
-from recorders import (MetricsCollector, TqdmTail, TrajectoryCollector,    # noqa: E402
-                       ReplayRecorder)
-from viz_events import EventBus                # noqa: E402
-from seeding import seed_everything             # noqa: E402
+from manager import MazeManager  # noqa: E402
+from maze import MazeEnvironment, RenderMaze  # noqa: E402
+from recorders import MetricsCollector, ReplayRecorder, TqdmTail, TrajectoryCollector  # noqa: E402
+from seeding import seed_everything  # noqa: E402
+from train import create_agent, evaluate_agent, simulate_episode, train_agent  # noqa: E402
+from viz_events import EventBus  # noqa: E402
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -74,6 +73,7 @@ def build_argparser() -> argparse.ArgumentParser:
 def _resume_agent(agent, path: str, mgr) -> None:
     """Load saved state into a freshly-created agent."""
     import pickle
+
     import torch
     if path.endswith(".pkl"):
         with open(path, "rb") as f:

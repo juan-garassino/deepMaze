@@ -15,12 +15,11 @@ import os
 import sys
 import threading
 import uuid
-from typing import Dict, Optional
 
+import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-import uvicorn
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -30,8 +29,7 @@ for sub in ("agents", "environment", "training", "utils", "config"):
         sys.path.insert(0, p)
 
 import numpy as np  # noqa: E402
-from viz_events import EventBus, EpisodeEvent, PolicyEvent, RunEvent, StepEvent  # noqa: E402
-
+from viz_events import EpisodeEvent, EventBus, PolicyEvent, RunEvent, StepEvent  # noqa: E402
 
 STATIC = os.path.join(_HERE, "static")
 
@@ -50,11 +48,11 @@ def _event_to_json(ev) -> str:
 # ---------------------------------------------------------------------------
 
 
-def create_app(bus: Optional[EventBus] = None, manager=None) -> FastAPI:
+def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
     app = FastAPI(title="deepMaze viewer")
     app.state.bus = bus or EventBus()
     app.state.manager = manager
-    app.state.runs: Dict[str, dict] = {}
+    app.state.runs: dict[str, dict] = {}
 
     if os.path.isdir(STATIC):
         app.mount("/static", StaticFiles(directory=STATIC), name="static")

@@ -1,6 +1,7 @@
-import numpy as np
-from collections import deque
 import random
+from collections import deque
+
+import numpy as np
 
 
 class ReplayBuffer:

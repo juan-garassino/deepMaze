@@ -15,13 +15,11 @@ from __future__ import annotations
 
 import random
 from collections import deque
-from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
 from base_agent import BaseAgent
 from nets import VOCAB, encode_grid_batch
 
@@ -43,7 +41,7 @@ class DRQN(nn.Module):
         self.head = nn.Linear(lstm_hidden, action_size)
 
     def forward(self, x_seq: torch.Tensor,
-                hidden: Optional[Tuple[torch.Tensor, torch.Tensor]] = None):
+                hidden: tuple[torch.Tensor, torch.Tensor] | None = None):
         """x_seq: (B, T, h, w) ints or (B, T, VOCAB, h, w) floats.
         Returns (q_seq, (h_n, c_n))."""
         if x_seq.dim() == 4:
@@ -65,7 +63,7 @@ class EpisodeBuffer:
     def __init__(self, capacity: int):
         self.capacity = capacity
         self.episodes: deque = deque(maxlen=capacity)
-        self._current: List[Tuple] = []
+        self._current: list[tuple] = []
 
     def add_step(self, obs, action, reward, next_obs, done):
         self._current.append((np.asarray(obs), int(action), float(reward),
