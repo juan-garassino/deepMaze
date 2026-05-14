@@ -84,5 +84,11 @@ class DQNAgent(BaseAgent):
         with torch.no_grad():
             return self.model(self._to_tensor(state)).cpu().numpy().flatten()
 
+    def q_values_batch(self, states):
+        flat = np.stack([np.asarray(s, dtype=np.float32).flatten() for s in states])
+        x = torch.from_numpy(flat).to(self.device)
+        with torch.no_grad():
+            return self.model(x).cpu().numpy()
+
     def policy_snapshot(self):
         return {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}

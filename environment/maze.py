@@ -186,15 +186,20 @@ class MazeEnvironment:
             return self.start_pos
         return tuple(candidates[self._rng.integers(len(candidates))])
 
-    def reset(self) -> np.ndarray:
+    def reset(self, at_start: bool = False) -> np.ndarray:
         self.agent_positions = []
-        for _ in range(self.n_agents):
-            self.agent_positions.append(self._find_empty_cell(self.agent_positions))
-        # Make agent 0 start at start_pos when possible.
-        if self.maze[self.start_pos] != HOLE:
-            taken = set(self.agent_positions[1:])
-            if self.start_pos not in taken:
-                self.agent_positions[0] = self.start_pos
+        if at_start:
+            self.agent_positions.append(self.start_pos)
+            for _ in range(self.n_agents - 1):
+                self.agent_positions.append(self._find_empty_cell(self.agent_positions))
+        else:
+            for _ in range(self.n_agents):
+                self.agent_positions.append(self._find_empty_cell(self.agent_positions))
+            # Make agent 0 start at start_pos when possible.
+            if self.maze[self.start_pos] != HOLE:
+                taken = set(self.agent_positions[1:])
+                if self.start_pos not in taken:
+                    self.agent_positions[0] = self.start_pos
         return self.get_observation()
 
     def get_observation(self) -> np.ndarray:

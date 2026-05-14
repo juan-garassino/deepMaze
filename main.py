@@ -10,7 +10,7 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-for sub in ("agents", "config", "environment", "training", "utils", "web"):
+for sub in ("agents", "environment", "training", "utils", "web", "config"):
     p = os.path.join(_HERE, sub)
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -21,6 +21,7 @@ from train import create_agent, train_agent, evaluate_agent, simulate_episode  #
 from recorders import (MetricsCollector, TqdmTail, TrajectoryCollector,    # noqa: E402
                        ReplayRecorder)
 from viz_events import EventBus                # noqa: E402
+from seeding import seed_everything             # noqa: E402
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -65,6 +66,7 @@ def _load_sprites(args) -> list:
 
 
 def run(args):
+    seed_everything(args.seed)
     mgr = MazeManager(run_id=args.run_id)
     mgr.save_config(vars(args))
 
@@ -123,13 +125,13 @@ def run(args):
     except Exception as e:
         mgr.log(f"Policy heatmap skipped: {e}", "warning")
 
-    # Replay GIF/WebP from one greedy episode.
-    saved_eps = getattr(agent, "epsilon", 0.0)
-    if hasattr(agent, "epsilon"):
-        agent.epsilon = 0.0
-    states, positions, _, total = simulate_episode(env, agent, args.max_steps)
-    if hasattr(agent, "epsilon"):
-        agent.epsilon = saved_eps
+    # Replay WebP from one greedy episode starting at the canonical Start cell.
+    agent.set_deterministic(True)
+    try:
+        states, positions, _, total = simulate_episode(env, agent, args.max_steps,
+                                                      at_start=True)
+    finally:
+        agent.set_deterministic(False)
 
     sprites = _load_sprites(args)
     rm = RenderMaze(sprites)

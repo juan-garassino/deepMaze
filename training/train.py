@@ -14,14 +14,17 @@ from viz_events import EventBus, EpisodeEvent, PolicyEvent, RunEvent, StepEvent
 
 
 def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
+    from hyperparameters import defaults_for
     state_size = env.height * env.width
     action_size = env.action_size
+    # caller kwargs override defaults; both override agent __init__ signatures
+    hp = {**defaults_for(agent_type), **{k: v for k, v in kwargs.items() if v is not None}}
     if agent_type == "q":
-        return QAgent(action_size=action_size, **kwargs)
+        return QAgent(action_size=action_size, **hp)
     if agent_type == "dqn":
-        return DQNAgent(state_size=state_size, action_size=action_size, **kwargs)
+        return DQNAgent(state_size=state_size, action_size=action_size, **hp)
     if agent_type == "ppo":
-        return PPOAgent(state_size=state_size, action_size=action_size, **kwargs)
+        return PPOAgent(state_size=state_size, action_size=action_size, **hp)
     raise ValueError(f"Unknown agent type: {agent_type}")
 
 
@@ -73,14 +76,17 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                 bus.publish(PolicyEvent(episode=episode,
                                         snapshot=agent.policy_snapshot()))
 
+    if hasattr(agent, "flush"):
+        agent.flush()
     if bus is not None:
         bus.publish(RunEvent(kind="end", info={}))
     return agent
 
 
-def simulate_episode(env: MazeEnvironment, agent, max_steps: int
+def simulate_episode(env: MazeEnvironment, agent, max_steps: int,
+                     at_start: bool = False
                      ) -> Tuple[List[np.ndarray], List[Tuple[int, int]], List[int], float]:
-    state = env.reset()
+    state = env.reset(at_start=at_start) if at_start else env.reset()
     states = [state.copy()]
     positions: List[Tuple[int, int]] = [env.agent_positions[0]]
     actions: List[int] = []
@@ -98,13 +104,21 @@ def simulate_episode(env: MazeEnvironment, agent, max_steps: int
     return states, positions, actions, total
 
 
-def evaluate_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int
+def evaluate_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
+                   deterministic: bool = True
                    ) -> Tuple[float, float, float]:
     rewards, lengths, successes = [], [], 0
-    for _ in range(num_episodes):
-        states, _, actions, total = simulate_episode(env, agent, max_steps)
-        rewards.append(total)
-        lengths.append(len(actions))
-        if total > 0:
-            successes += 1
+    prev = getattr(agent, "deterministic", False)
+    if deterministic:
+        agent.set_deterministic(True)
+    try:
+        for _ in range(num_episodes):
+            states, _, actions, total = simulate_episode(env, agent, max_steps)
+            rewards.append(total)
+            lengths.append(len(actions))
+            if total > 0:
+                successes += 1
+    finally:
+        if deterministic:
+            agent.set_deterministic(prev)
     return float(np.mean(rewards)), float(np.mean(lengths)), successes / num_episodes

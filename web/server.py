@@ -24,7 +24,7 @@ import uvicorn
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-for sub in ("agents", "environment", "training", "utils"):
+for sub in ("agents", "environment", "training", "utils", "config"):
     p = os.path.join(_ROOT, sub)
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -66,27 +66,53 @@ def create_app(bus: Optional[EventBus] = None, manager=None) -> FastAPI:
 
     @app.post("/api/runs")
     async def start_run(req: Request):
-        """Standalone training run. Body: agent_type, maze, num_episodes, ..."""
+        """Start a training run.
+
+        Body keys:
+          maze: 2D int array — if present, used verbatim (must contain START=2
+                and EXIT=3); generator is bypassed.
+          width, height, density, generator: only when no maze supplied.
+          agent_type: 'q' | 'dqn' | 'ppo'
+          num_episodes, max_steps, gamma, seed
+        """
         body = await req.json()
+        user_maze = body.get("maze")
+        if user_maze is not None:
+            m = np.asarray(user_maze, dtype=np.uint8)
+            if m.ndim != 2 or m.shape[0] < 5 or m.shape[1] < 5:
+                raise HTTPException(400, "maze must be 2D with min 5x5")
+            if not (m == 2).any():
+                raise HTTPException(400, "maze missing START cell (value 2)")
+            if not (m == 3).any():
+                raise HTTPException(400, "maze missing EXIT cell (value 3)")
         run_id = str(uuid.uuid4())[:8]
 
         def _train():
             import importlib
             maze_mod = importlib.import_module("maze")
             train_mod = importlib.import_module("train")
-            env = maze_mod.MazeEnvironment(
-                width=body.get("width", 8),
-                height=body.get("height", 8),
-                density=body.get("density", 0.2),
-                seed=body.get("seed"),
-            )
-            if "maze" in body:
-                m = np.asarray(body["maze"], dtype=np.uint8)
-                if m.shape == env.maze.shape:
-                    env.maze = m
-                    env.start_pos = tuple(map(int, np.argwhere(m == 2)[0]))
-                    env.treasure_pos = tuple(map(int, np.argwhere(m == 3)[0]))
-                    env.reset()
+            seeding_mod = importlib.import_module("seeding")
+            seeding_mod.seed_everything(body.get("seed"))
+
+            if user_maze is not None:
+                m = np.asarray(user_maze, dtype=np.uint8)
+                env = maze_mod.MazeEnvironment(
+                    width=m.shape[1], height=m.shape[0],
+                    generator="open", ensure_solvable=False,
+                    seed=body.get("seed"),
+                )
+                env.maze = m.copy()
+                env.start_pos = tuple(map(int, np.argwhere(m == 2)[0]))
+                env.treasure_pos = tuple(map(int, np.argwhere(m == 3)[0]))
+                env.reset(at_start=True)
+            else:
+                env = maze_mod.MazeEnvironment(
+                    width=body.get("width", 8),
+                    height=body.get("height", 8),
+                    density=body.get("density", 0.2),
+                    generator=body.get("generator", "random"),
+                    seed=body.get("seed"),
+                )
             agent = train_mod.create_agent(body.get("agent_type", "q"), env,
                                            discount_factor=body.get("gamma", 0.95))
             train_mod.train_agent(env, agent,

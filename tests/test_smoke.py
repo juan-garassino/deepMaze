@@ -1,34 +1,44 @@
-"""End-to-end smoke: train q-agent for a handful of episodes, render replay."""
+"""Nano smoke: each agent runs end-to-end without errors.
+Convergence is NOT asserted — these tests prove plumbing, not RL quality.
+"""
 
 import numpy as np
+import pytest
 
 from maze import MazeEnvironment, RenderMaze
 from train import create_agent, train_agent, evaluate_agent, simulate_episode
 from viz_events import EventBus
 from recorders import MetricsCollector, TrajectoryCollector
+from seeding import seed_everything
 
 
-def test_q_agent_smoke(tmp_path):
-    env = MazeEnvironment(6, 6, density=0.1, seed=0)
-    agent = create_agent("q", env, learning_rate=0.5, discount_factor=0.95)
+@pytest.mark.parametrize("agent_type,episodes,extra", [
+    ("q",   8, {"learning_rate": 0.5}),
+    ("dqn", 6, {"batch_size": 16, "buffer_capacity": 256}),
+    ("ppo", 6, {"n_steps": 32, "minibatches": 2, "epochs": 2}),
+])
+def test_agent_smoke(agent_type, episodes, extra, tmp_path):
+    seed_everything(0)
+    env = MazeEnvironment(5, 5, density=0.0, seed=0, generator="open")
+    agent = create_agent(agent_type, env, **extra)
     bus = EventBus()
     metrics = MetricsCollector()
-    traj = TrajectoryCollector()
-    bus.subscribe(metrics)
-    bus.subscribe(traj)
+    bus.subscribe(metrics); bus.subscribe(TrajectoryCollector())
 
-    train_agent(env, agent, num_episodes=20, max_steps=80, bus=bus,
-                policy_snapshot_every=10)
+    train_agent(env, agent, num_episodes=episodes, max_steps=30, bus=bus,
+                policy_snapshot_every=max(1, episodes))
+    assert len(metrics.episodes) == episodes
 
-    assert len(metrics.episodes) == 20
-    avg_r, avg_l, success = evaluate_agent(env, agent, num_episodes=5, max_steps=80)
+    avg_r, avg_l, success = evaluate_agent(env, agent, num_episodes=3,
+                                           max_steps=30)
     assert isinstance(avg_r, float)
+    assert avg_l > 0
 
-    # Replay
     rm = RenderMaze(RenderMaze.placeholder_sprites(16))
-    states, positions, _, _ = simulate_episode(env, agent, max_steps=80)
+    states, positions, _, _ = simulate_episode(env, agent, max_steps=30,
+                                               at_start=True)
     for s, p in zip(states, positions):
         rm.add(s, p)
-    out = tmp_path / "r.webp"
+    out = tmp_path / f"r-{agent_type}.webp"
     rm.save(str(out), fmt="webp", sprite_size=16)
     assert out.exists() and out.stat().st_size > 0
