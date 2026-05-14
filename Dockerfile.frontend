@@ -1,0 +1,12 @@
+# deepMaze frontend: nginx serving web/static.
+# nginx:alpine has an envsubst step under /docker-entrypoint.d that
+# substitutes ${API_BASE_URL} into any *.template under /etc/nginx/templates.
+FROM nginx:1-alpine
+
+COPY web/static /usr/share/nginx/html
+COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
+# Substitute API_BASE_URL into config.js at container start too.
+COPY docker/substitute-config.sh /docker-entrypoint.d/40-substitute-config.sh
+RUN chmod +x /docker-entrypoint.d/40-substitute-config.sh
+
+EXPOSE 80

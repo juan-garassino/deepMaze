@@ -1,16 +1,29 @@
 # Contributing
 
-## Setup
+## Setup — local
 
 ```bash
 pip install -r requirements-dev.txt
 ```
+
+## Setup — Docker (split: backend :8000, frontend :8080)
+
+```bash
+docker compose up --build
+```
+
+Live source rebuild requires a manual `docker compose build`; for fast
+iteration prefer the local Python loop.
 
 ## Test
 
 ```bash
 python -m pytest tests/ -q
 ```
+
+Local tests stay nano: tabular Q on 5×5 mazes only. Heavy agents
+(CNN/LSTM/Transformer) are tested via inference only, with trained weights
+loaded from `assets/` (Colab-trained).
 
 ## Lint
 

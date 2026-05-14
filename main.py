@@ -40,6 +40,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--lava_reward", type=float, default=-1.0)
     p.add_argument("--partial", type=int, default=None,
                    help="Egocentric (2K+1)x(2K+1) window; default full-view.")
+    p.add_argument("--n_treasures", type=int, default=1)
+    p.add_argument("--collect_all", action="store_true",
+                   help="Episode ends only after ALL treasures collected.")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--num_episodes", type=int, default=500)
     p.add_argument("--max_steps", type=int, default=200)
@@ -105,7 +108,9 @@ def run(args):
                           seed=args.seed, generator=args.generator,
                           ensure_solvable=not args.no_ensure_solvable,
                           n_lava=args.n_lava, lava_reward=args.lava_reward,
-                          partial_view=args.partial)
+                          partial_view=args.partial,
+                          n_treasures=args.n_treasures,
+                          collect_all=args.collect_all)
     mgr.log(f"Maze: gen={args.generator} solvable={env.is_solvable()}")
     agent_kw = {"discount_factor": args.discount_factor}
     if args.learning_rate is not None:
@@ -161,7 +166,9 @@ def run(args):
                                     seed=seed_k, generator=args.generator,
                                     ensure_solvable=not args.no_ensure_solvable,
                                     n_lava=args.n_lava, lava_reward=args.lava_reward,
-                                    partial_view=args.partial)
+                                    partial_view=args.partial,
+                                    n_treasures=args.n_treasures,
+                                    collect_all=args.collect_all)
             r_k, l_k, s_k = evaluate_agent(env_k, agent,
                                            num_episodes=args.eval_episodes,
                                            max_steps=args.max_steps)

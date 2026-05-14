@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>deepMaze memory</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/config.js"></script>
 </head>
 <body class="app">
   <header class="topbar">
@@ -63,7 +64,8 @@
       }
     }
 
-    const es = new EventSource("/api/events");
+    const API = (p) => (window.API_BASE_URL || "") + p;
+    const es = new EventSource(API("/api/events"));
     es.onmessage = (msg) => {
       const ev = JSON.parse(msg.data);
       if ((ev.type === "step" || ev.type === "step_delta") && ev.memory) {

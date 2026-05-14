@@ -18,6 +18,7 @@ import uuid
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,6 +33,28 @@ import numpy as np  # noqa: E402
 from viz_events import EpisodeEvent, EventBus, PolicyEvent, RunEvent, StepEvent  # noqa: E402
 
 STATIC = os.path.join(_HERE, "static")
+
+
+def _find_model_file(d: str) -> str | None:
+    """Prefer best-checkpoint over final; .pt over .pkl."""
+    for fn in ("model.best.pt", "model.pt", "model.best.pkl", "model.pkl"):
+        p = os.path.join(d, fn)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _load_model_into(agent, path: str) -> None:
+    """Restore agent state from a saved file (mirrors main._resume_agent)."""
+    import pickle
+    if path.endswith(".pkl"):
+        with open(path, "rb") as f:
+            agent.Q.update(pickle.load(f))
+        return
+    import torch
+    module = getattr(agent, "model", None) or getattr(agent, "ac", None)
+    state = torch.load(path, map_location=getattr(agent, "device", "cpu"))
+    module.load_state_dict(state)
 
 
 def _render_detail(name: str, results: dict, artifacts: list[str]) -> str:
@@ -77,6 +100,14 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
     app.state.bus = bus or EventBus()
     app.state.manager = manager
     app.state.runs: dict[str, dict] = {}
+
+    cors = os.environ.get("CORS_ORIGINS", "*").split(",")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors if cors != ["*"] else ["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     if os.path.isdir(STATIC):
         app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -128,7 +159,8 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
                 )
                 env.maze = m.copy()
                 env.start_pos = tuple(map(int, np.argwhere(m == 2)[0]))
-                env.treasure_pos = tuple(map(int, np.argwhere(m == 3)[0]))
+                env.treasure_positions = [tuple(map(int, p))
+                                          for p in np.argwhere(m == 3)]
                 env.reset(at_start=True)
             else:
                 env = maze_mod.MazeEnvironment(
@@ -177,7 +209,7 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
 
     @app.post("/api/maze/generate")
     async def maze_generate(req: Request):
-        """Return a server-generated maze. Used by the Web editor's DFS button."""
+        """Return a server-generated maze. Used by the Web editor."""
         import importlib
         body = await req.json()
         maze_mod = importlib.import_module("maze")
@@ -187,11 +219,106 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
             density=body.get("density", 0.2),
             generator=body.get("generator", "dfs"),
             n_lava=body.get("n_lava", 0),
+            n_treasures=body.get("n_treasures", 1),
             seed=body.get("seed"),
         )
         return {"maze": env.maze.tolist(),
                 "start": list(env.start_pos),
-                "goal": list(env.treasure_pos)}
+                "treasures": [list(p) for p in env.treasure_positions]}
+
+    @app.get("/api/models")
+    def list_models():
+        """Pretrained models: assets/* and maze_rl_runs/run_* with a model file."""
+        cwd = os.getcwd()
+        items = []
+        for source, base in (("asset", "assets"), ("run", "maze_rl_runs")):
+            base_path = os.path.join(cwd, base)
+            if not os.path.isdir(base_path):
+                continue
+            for name in sorted(os.listdir(base_path), reverse=(source == "run")):
+                d = os.path.join(base_path, name)
+                if not os.path.isdir(d):
+                    continue
+                cfg_path = os.path.join(d, "config.json")
+                model_path = _find_model_file(d)
+                if not (os.path.exists(cfg_path) and model_path):
+                    continue
+                try:
+                    cfg = json.loads(open(cfg_path).read())
+                except Exception:
+                    continue
+                items.append({
+                    "source": source,
+                    "name": name,
+                    "agent_type": cfg.get("agent_type"),
+                    "model_file": os.path.basename(model_path),
+                })
+        return {"models": items}
+
+    @app.post("/api/inference")
+    async def inference(req: Request):
+        """Load a pretrained model and stream a greedy episode via SSE."""
+        body = await req.json()
+        source = body.get("source", "run")
+        name = body["name"]
+        cwd = os.getcwd()
+        base = os.path.join(cwd, "assets" if source == "asset" else "maze_rl_runs", name)
+        if not os.path.isdir(base):
+            raise HTTPException(404, f"{source}/{name} not found")
+        cfg_path = os.path.join(base, "config.json")
+        model_path = _find_model_file(base)
+        if not (os.path.exists(cfg_path) and model_path):
+            raise HTTPException(400, f"{name} missing config.json or model file")
+        cfg = json.loads(open(cfg_path).read())
+
+        def _run():
+            import importlib as _il
+            maze_mod = _il.import_module("maze")
+            train_mod = _il.import_module("train")
+            seeding_mod = _il.import_module("seeding")
+            seeding_mod.seed_everything(body.get("seed"))
+
+            maze_source = body.get("maze_source", "trained")
+            seed = (cfg.get("seed") if maze_source == "trained"
+                    else (body.get("seed") or (cfg.get("seed") or 0) + 1))
+            env_kw = dict(
+                width=cfg.get("maze_width", 10),
+                height=cfg.get("maze_height", 10),
+                density=cfg.get("density", 0.2),
+                generator=cfg.get("generator", "random"),
+                n_lava=cfg.get("n_lava", 0),
+                lava_reward=cfg.get("lava_reward", -1.0),
+                partial_view=cfg.get("partial"),
+                n_treasures=cfg.get("n_treasures", 1),
+                collect_all=cfg.get("collect_all", False),
+                seed=seed,
+            )
+            env = maze_mod.MazeEnvironment(**env_kw)
+            if maze_source == "custom" and body.get("custom_maze"):
+                import numpy as _np
+                m = _np.asarray(body["custom_maze"], dtype=_np.uint8)
+                if m.shape == env.maze.shape:
+                    env.maze = m.copy()
+                    env.reset(at_start=True)
+
+            agent_kw = {}
+            if cfg.get("net"):
+                agent_kw["net"] = cfg["net"]
+            agent = train_mod.create_agent(cfg["agent_type"], env, **agent_kw)
+            _load_model_into(agent, model_path)
+            agent.set_deterministic(True)
+
+            episodes = int(body.get("episodes", 1))
+            max_steps = int(body.get("max_steps", cfg.get("max_steps", 200)))
+            for ep in range(episodes):
+                train_mod.simulate_episode_streaming(
+                    env, agent, app.state.bus, episode=ep,
+                    max_steps=max_steps, at_start=True,
+                )
+            app.state.bus.publish(RunEvent(kind="end", info={"mode": "inference"}))
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"started": True, "name": name, "source": source}
 
     @app.get("/runs")
     def runs_page():

@@ -56,25 +56,72 @@ deepMaze/
 ```bash
 pip install -r requirements.txt
 
-# Q-learning, placeholder sprites (no asset needed)
+# Q-learning, placeholder sprites
 python main.py --agent_type q --maze_width 8 --maze_height 8 \
   --num_episodes 200 --seed 0
 
-# DQN with custom sprite sheet
-python main.py --agent_type dqn --image_path assets --sprite_files sprites.png
+# Multi-treasure DFS maze with lava
+python main.py --agent_type q --n_treasures 3 --n_lava 2 --generator dfs
 
-# Live CLI tail
-python main.py --live --num_episodes 1000
+# Collect-all variant — episode only ends after ALL treasures
+python main.py --n_treasures 3 --collect_all
 
 # Live web viewer alongside training (port 8000)
 python main.py --live_web --web_port 8000
 
-# Standalone web viewer (draw your own maze, train from the browser)
+# Standalone web viewer (Train + Pretrained inference + Runs browser)
 python web/server.py --port 8000
+
+# Docker (split: backend :8000, frontend :8080)
+docker compose up --build
+# then visit http://localhost:8080
 
 # Tests
 python -m pytest tests/ -q
 ```
+
+## Pretrained inference
+
+Pretrained models (typically trained externally on Colab) live in
+`assets/<name>/`. Layout matches a training run:
+
+```
+assets/<name>/
+    config.json       # at minimum: agent_type + env params
+    model.pt          # state_dict (or model.pkl for tabular Q)
+    viz/replay.webp   # optional preview thumbnail
+```
+
+`GET /api/models` enumerates both `assets/*` and `maze_rl_runs/run_*` that
+contain `config.json` + a model file. `POST /api/inference` loads the
+chosen one, streams a greedy episode through the existing SSE pipeline.
+
+UI flow:
+- On `/` (Train page), toggle "Load pretrained" → pick model from
+  dropdown → choose maze source (same / fresh / custom-painted) → ▶ Watch.
+- On `/runs`, each card has a `▶ watch` shortcut that redirects to
+  `/?inference=<name>` and auto-fires the watch flow.
+
+Heavy training (CNN/LSTM/Transformer) belongs in Colab. The local test
+suite trains only tiny tabular Q-agents on 5×5 mazes.
+
+## Docker
+
+Two services orchestrated by `docker-compose.yml`:
+
+| Service  | Image                  | Port | Mounts                             |
+|----------|------------------------|------|------------------------------------|
+| backend  | `Dockerfile`           | 8000 | `./maze_rl_runs`, `./assets`       |
+| frontend | `Dockerfile.frontend`  | 8080 | (none)                             |
+
+The frontend is plain nginx serving `web/static`. `${API_BASE_URL}` is
+substituted into `web/static/config.js` at container start; the JS reads
+`window.API_BASE_URL` and prefixes every `fetch()` / `EventSource`. CORS
+on the backend is governed by `CORS_ORIGINS` (comma-separated, set in
+compose).
+
+For non-Docker dev `python web/server.py` still works — `config.js`
+detects the unsubstituted template and falls back to same-origin.
 
 ## Run artifacts
 
@@ -89,8 +136,10 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 
 - `find_empty_cell` falls back to `start_pos` if the maze has no walkable cells (don't crank `--density` above 0.6).
 - The web SSE handler subscribes a `queue.Queue`; when the queue saturates (>4096 events) the oldest is dropped to keep the live feed responsive. Saved artifacts are unaffected — they come from in-process subscribers.
-- Tabular Q-learning's policy heatmap uses each cell's observation as a key; if exploration never visited a cell, that cell's `V` is `NaN` and gets masked.
-- Sprite sheet format: 16×16 source tiles; `RenderMaze.crop_images` resizes to `--sprite_size` (default 32). Required sprite indices: `0=HOLE, 1=LAND, 2=LAVA, 3=EXIT, 4=AGENT`.
+- Tabular Q-learning's policy heatmap uses each cell's observation as a key; unvisited cells show `NaN`. The `rollout.png` (behavioral viz) is the right answer for those agents.
+- Sprite sheet format: 16×16 source tiles; required sprite indices: `0=HOLE, 1=LAND, 2=LAVA, 3=EXIT, 4=AGENT`. Cell-value AGENT_BASE is 5 (agents are `5 + agent_index`).
+- Pretrained-model `config.json` must match the architecture: shape mismatches at `load_state_dict` time will raise.
+- Multi-treasure: `n_treasures > 1` places extras on reachable LAND; lava placement excludes all start→treasure paths. `collect_all=True` keeps the episode running until every treasure is consumed.
 
 ## Workspace context
 

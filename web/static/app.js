@@ -1,14 +1,16 @@
 /* deepMaze browser client.
  *
- * Renders:
- *   - editable maze on <canvas#maze> (paint-mode toolbar, click+drag)
- *   - agent live + scrubable frame history
- *   - memory strip below the maze (LSTM hidden / DTQN attention)
- *   - four Chart.js live charts (reward / length / loss / epsilon)
- *   - policy-arrow + visitation overlays
+ * Modes:
+ *   - Train: configure params, click Train -> live SSE
+ *   - Pretrained: pick a model, pick maze source, click Watch -> live SSE
  *
- * No build step. Chart.js loaded via CDN.
+ * Editor model:
+ *   Maze always starts from a server-generated layout (POST /api/maze/generate).
+ *   Paint actions modify that base; Reset edits restores it; Regenerate fetches
+ *   a fresh one. No client-side maze generation.
  */
+
+const API = (path) => (window.API_BASE_URL || "") + path;
 
 const HOLE = 0, LAND = 1, START = 2, EXIT = 3, LAVA = 4;
 const COLORS = {
@@ -27,45 +29,36 @@ const memCanvas = $("memory");
 const memCtx = memCanvas.getContext("2d");
 
 let W = +$("w").value, H = +$("h").value;
-let maze = newMaze(W, H, +$("density").value);
+let maze = blankMaze(W, H);
+let cachedGenerated = null;  // last server-generated layout (for Reset edits)
 let agentPos = null;
 let paintMode = LAND;
 let paintHeld = false;
 
-// Live state.
-let frames = [];          // [{maze, pos, q_values, memory}]
+let frames = [];
 let frameIdx = 0;
 let playing = true;
-let policyArrows = null;  // (H × W × 4) recent policy snapshot
-let visitTrail = new Map();  // "i,j" -> recency score
+let policyArrows = null;
+let visitTrail = new Map();
 let overlayArrows = true, overlayVisits = false;
 
-// --- maze helpers -------------------------------------------------------
-function newMaze(w, h, density) {
-  const m = Array.from({length: h}, (_, i) =>
-    Array.from({length: w}, (_, j) => {
-      if (i === 0 || j === 0 || i === h - 1 || j === w - 1) return HOLE;
-      return Math.random() < density ? HOLE : LAND;
-    }),
-  );
-  m[1][1] = START;
-  m[h - 2][w - 2] = EXIT;
+function blankMaze(w, h) {
+  // Walls-only placeholder used before first generator response.
+  const m = Array.from({length: h}, () => Array.from({length: w}, () => HOLE));
   return m;
 }
+
+function cloneMaze(m) { return m.map(r => r.slice()); }
 function cellSize() { return Math.floor(Math.min(canvas.width / W, canvas.height / H)); }
 
 function draw() {
   const s = cellSize();
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // base tiles
-  for (let i = 0; i < H; i++) {
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < H; i++)
     for (let j = 0; j < W; j++) {
       ctx.fillStyle = COLORS[maze[i][j]] || COLORS[LAND];
       ctx.fillRect(j * s, i * s, s - 1, s - 1);
     }
-  }
-  // visitation trail (fade)
   if (overlayVisits) {
     for (const [k, v] of visitTrail.entries()) {
       const [i, j] = k.split(",").map(Number);
@@ -73,21 +66,15 @@ function draw() {
       ctx.fillRect(j * s, i * s, s, s);
     }
   }
-  // policy arrows
   if (overlayArrows && policyArrows) {
-    ctx.strokeStyle = "#ffffffaa";
-    ctx.lineWidth = 1;
-    for (let i = 0; i < H; i++) {
+    ctx.strokeStyle = "#ffffffaa"; ctx.lineWidth = 1;
+    for (let i = 0; i < H; i++)
       for (let j = 0; j < W; j++) {
         if (maze[i][j] === HOLE || maze[i][j] === LAVA) continue;
         const q = policyArrows[i] && policyArrows[i][j];
-        if (!q) continue;
-        const a = argmax(q);
-        drawArrow(j * s + s/2, i * s + s/2, a, s * 0.3);
+        if (q) drawArrow(j * s + s/2, i * s + s/2, argmax(q), s * 0.3);
       }
-    }
   }
-  // agent
   if (agentPos) {
     const [r, c] = agentPos;
     ctx.fillStyle = AGENT_COLOR;
@@ -100,9 +87,7 @@ function draw() {
 function argmax(a) {
   let bi = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[bi]) bi = i; return bi;
 }
-
 function drawArrow(cx, cy, action, len) {
-  // 0=up, 1=right, 2=down, 3=left
   const d = [[0, -1], [1, 0], [0, 1], [-1, 0]][action];
   const x2 = cx + d[0] * len, y2 = cy + d[1] * len;
   ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x2, y2); ctx.stroke();
@@ -114,7 +99,7 @@ function drawArrow(cx, cy, action, len) {
   ctx.closePath(); ctx.fillStyle = "#ffffffaa"; ctx.fill();
 }
 
-// --- toolbar / editor ---------------------------------------------------
+// --- paint editor (always operates on top of generator output) ----------
 document.querySelectorAll(".paint-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".paint-btn").forEach(b => b.classList.remove("active"));
@@ -130,7 +115,6 @@ function paintAt(e) {
   const i = Math.floor((e.clientY - rect.top) / s);
   if (i <= 0 || j <= 0 || i >= H - 1 || j >= W - 1) return;
   if (paintMode === START) clearVal(START);
-  if (paintMode === EXIT) clearVal(EXIT);
   maze[i][j] = paintMode;
   draw();
 }
@@ -142,39 +126,73 @@ canvas.addEventListener("mousedown", (e) => { paintHeld = true; paintAt(e); });
 canvas.addEventListener("mousemove", (e) => { if (paintHeld) paintAt(e); });
 window.addEventListener("mouseup", () => { paintHeld = false; });
 
-$("regen").addEventListener("click", () => {
+// --- generator (single source of mazes) ---------------------------------
+async function generateMaze() {
   W = +$("w").value; H = +$("h").value;
-  maze = newMaze(W, H, +$("density").value);
-  resetLive(); draw();
-});
-$("clearBtn").addEventListener("click", () => {
-  W = +$("w").value; H = +$("h").value;
-  maze = newMaze(W, H, 0);
-  resetLive(); draw();
-});
-$("dfsBtn").addEventListener("click", async () => {
-  W = +$("w").value; H = +$("h").value;
-  $("status").textContent = "generating DFS…";
-  // Use server-side generator: request 1-episode train that just produces an env.
-  const r = await fetch("/api/maze/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ width: W, height: H, generator: "dfs",
-                           n_lava: +$("n_lava").value || 0,
-                           seed: Math.floor(Math.random() * 1e6) }),
-  });
-  if (r.ok) {
+  $("status").textContent = "generating…";
+  try {
+    const r = await fetch(API("/api/maze/generate"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        width: W, height: H,
+        density: +$("density").value,
+        generator: $("generator").value,
+        n_lava: +$("n_lava").value || 0,
+        n_treasures: +$("n_treasures").value || 1,
+        seed: Math.floor(Math.random() * 1e6),
+      }),
+    });
+    if (!r.ok) { $("status").textContent = "gen failed"; return; }
     const body = await r.json();
-    maze = body.maze;
+    cachedGenerated = body.maze;
+    maze = cloneMaze(cachedGenerated);
     resetLive(); draw();
     $("status").textContent = "ready";
-  } else {
-    $("status").textContent = "dfs gen failed";
+  } catch (e) {
+    $("status").textContent = "gen error: " + e.message;
   }
+}
+
+$("regen").addEventListener("click", generateMaze);
+$("resetEdits").addEventListener("click", () => {
+  if (cachedGenerated) { maze = cloneMaze(cachedGenerated); resetLive(); draw(); }
 });
 
 $("ovArrows").addEventListener("change", e => { overlayArrows = e.target.checked; draw(); });
 $("ovVisits").addEventListener("change", e => { overlayVisits = e.target.checked; draw(); });
+
+// --- mode toggle --------------------------------------------------------
+document.querySelectorAll("input[name=mode]").forEach(r => {
+  r.addEventListener("change", async () => {
+    const mode = r.value;
+    $("trainPanel").style.display = mode === "train" ? "" : "none";
+    $("inferencePanel").style.display = mode === "inference" ? "" : "none";
+    if (mode === "inference") await populateModels();
+  });
+});
+
+async function populateModels() {
+  try {
+    const r = await fetch(API("/api/models"));
+    const body = r.ok ? await r.json() : { models: [] };
+    const sel = $("model");
+    sel.innerHTML = "";
+    if (!body.models.length) {
+      const o = document.createElement("option");
+      o.textContent = "(no models found)"; o.disabled = true;
+      sel.appendChild(o); return;
+    }
+    for (const m of body.models) {
+      const o = document.createElement("option");
+      o.value = `${m.source}/${m.name}`;
+      o.textContent = `[${m.source}] ${m.name} (${m.agent_type || "?"})`;
+      sel.appendChild(o);
+    }
+  } catch (e) {
+    $("status").textContent = "models load failed";
+  }
+}
 
 // --- charts -------------------------------------------------------------
 const chartOpts = {
@@ -195,14 +213,8 @@ const rewardChart = mkChart("rewardChart", "reward", "#4ea8ff");
 const lengthChart = mkChart("lengthChart", "length", "#ffb479");
 const lossChart   = mkChart("lossChart",   "loss",   "#e25555");
 const epsChart    = mkChart("epsChart",    "epsilon","#6ec07b");
-
-function pushChart(c, x, y) {
-  c.data.labels.push(x); c.data.datasets[0].data.push(y);
-}
-function flushCharts() {
-  rewardChart.update("none"); lengthChart.update("none");
-  lossChart.update("none"); epsChart.update("none");
-}
+function pushChart(c, x, y) { c.data.labels.push(x); c.data.datasets[0].data.push(y); }
+function flushCharts() { for (const c of [rewardChart, lengthChart, lossChart, epsChart]) c.update("none"); }
 function resetCharts() {
   for (const c of [rewardChart, lengthChart, lossChart, epsChart]) {
     c.data.labels = []; c.data.datasets[0].data = []; c.update("none");
@@ -213,10 +225,7 @@ function resetCharts() {
 function drawMemory(mem) {
   const w = memCanvas.width, h = memCanvas.height;
   memCtx.fillStyle = "#1c232c"; memCtx.fillRect(0, 0, w, h);
-  if (!mem) {
-    $("memLabel").textContent = "memory: —";
-    return;
-  }
+  if (!mem) { $("memLabel").textContent = "memory: —"; return; }
   $("memLabel").textContent = mem.kind === "lstm_hidden"
     ? "memory: LSTM hidden state"
     : "memory: attention over past steps";
@@ -229,28 +238,22 @@ function drawMemory(mem) {
     if (mem.kind === "attention_row") {
       const a = Math.max(0, Math.min(1, v));
       memCtx.fillStyle = `rgba(78, 168, 255, ${a})`;
-      memCtx.fillRect(i * cw, 0, cw + 1, h);
     } else {
-      // diverging blue/red
       const a = Math.min(1, Math.abs(v));
-      memCtx.fillStyle = v >= 0
-        ? `rgba(78, 168, 255, ${a})`
-        : `rgba(226, 85, 85, ${a})`;
-      memCtx.fillRect(i * cw, 0, cw + 1, h);
+      memCtx.fillStyle = v >= 0 ? `rgba(78, 168, 255, ${a})` : `rgba(226, 85, 85, ${a})`;
     }
+    memCtx.fillRect(i * cw, 0, cw + 1, h);
   }
 }
 
-// --- scrubber + frame history ------------------------------------------
+// --- scrubber + frames --------------------------------------------------
 function renderFrame(idx) {
   if (!frames[idx]) return;
   const f = frames[idx];
   maze = f.maze; agentPos = f.pos;
-  drawMemory(f.memory);
-  draw();
+  drawMemory(f.memory); draw();
   $("frameLabel").textContent = `${idx + 1} / ${frames.length}`;
-  $("scrub").max = frames.length - 1;
-  $("scrub").value = idx;
+  $("scrub").max = frames.length - 1; $("scrub").value = idx;
 }
 function pushFrame(f) {
   frames.push(f);
@@ -264,38 +267,33 @@ function resetLive() {
   drawMemory(null);
 }
 $("playBtn").addEventListener("click", () => {
-  playing = !playing;
-  $("playBtn").textContent = playing ? "▶" : "⏸";
+  playing = !playing; $("playBtn").textContent = playing ? "▶" : "⏸";
   if (playing && frames.length) { frameIdx = frames.length - 1; renderFrame(frameIdx); }
 });
 $("stepBtn").addEventListener("click", () => {
   playing = false; $("playBtn").textContent = "⏸";
-  frameIdx = Math.min(frames.length - 1, frameIdx + 1);
-  renderFrame(frameIdx);
+  frameIdx = Math.min(frames.length - 1, frameIdx + 1); renderFrame(frameIdx);
 });
 $("scrub").addEventListener("input", () => {
   playing = false; $("playBtn").textContent = "⏸";
-  frameIdx = +$("scrub").value;
-  renderFrame(frameIdx);
+  frameIdx = +$("scrub").value; renderFrame(frameIdx);
 });
 
 // --- SSE ----------------------------------------------------------------
 let es = null;
 function startStream() {
   if (es) es.close();
-  es = new EventSource("/api/events");
+  es = new EventSource(API("/api/events"));
   es.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
     if (ev.type === "step") {
       const baseMaze = ev.state.map(row => row.map(v => v >= 5 ? LAND : v));
       H = baseMaze.length; W = baseMaze[0].length;
       pushFrame({ maze: baseMaze, pos: ev.position, memory: ev.memory });
-      const key = `${ev.position[0]},${ev.position[1]}`;
-      visitTrail.set(key, 1);
+      visitTrail.set(`${ev.position[0]},${ev.position[1]}`, 1);
     } else if (ev.type === "step_delta") {
       const baseMaze = frames.length ? frames[frames.length - 1].maze : maze;
       pushFrame({ maze: baseMaze, pos: ev.position, memory: ev.memory });
-      // fade existing visits
       for (const k of visitTrail.keys()) visitTrail.set(k, visitTrail.get(k) * 0.97);
       visitTrail.set(`${ev.position[0]},${ev.position[1]}`, 1);
     } else if (ev.type === "episode") {
@@ -307,8 +305,7 @@ function startStream() {
       $("status").textContent =
         `ep ${ev.episode} R=${ev.total_reward.toFixed(2)} len=${ev.length}`;
     } else if (ev.type === "run" && ev.kind === "end") {
-      flushCharts();
-      $("status").textContent = "done";
+      flushCharts(); $("status").textContent = "done";
     }
   };
   es.onerror = () => { $("status").textContent = "stream closed"; };
@@ -317,8 +314,6 @@ function startStream() {
 // --- train --------------------------------------------------------------
 $("train").addEventListener("click", async () => {
   W = +$("w").value; H = +$("h").value;
-  if (maze.length !== H || maze[0].length !== W)
-    maze = newMaze(W, H, +$("density").value);
   $("status").textContent = "starting…";
   resetCharts(); resetLive(); draw();
   startStream();
@@ -328,13 +323,15 @@ $("train").addEventListener("click", async () => {
     agent_type: $("agent").value,
     width: W, height: H,
     density: +$("density").value,
+    generator: $("generator").value,
+    n_treasures: +$("n_treasures").value,
     num_episodes: +$("episodes").value,
     max_steps: +$("max_steps").value,
     n_lava: +$("n_lava").value,
     partial,
-    maze,
+    maze,    // user-edited base
   };
-  const r = await fetch("/api/runs", {
+  const r = await fetch(API("/api/runs"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -342,5 +339,49 @@ $("train").addEventListener("click", async () => {
   if (!r.ok) $("status").textContent = "start failed";
 });
 
-// init
-draw();
+// --- inference / Watch --------------------------------------------------
+$("watch").addEventListener("click", async () => {
+  const sel = $("model").value;
+  if (!sel) return;
+  const [source, ...rest] = sel.split("/");
+  const name = rest.join("/");
+  $("status").textContent = "loading model…";
+  resetCharts(); resetLive(); draw();
+  startStream();
+
+  const body = {
+    source, name,
+    episodes: +$("infEpisodes").value,
+    maze_source: $("mazeSource").value,
+    seed: Math.floor(Math.random() * 1e6),
+  };
+  if (body.maze_source === "custom") body.custom_maze = maze;
+
+  const r = await fetch(API("/api/inference"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    $("status").textContent = "inference failed: " + t;
+  }
+});
+
+// --- init ---------------------------------------------------------------
+(async function() {
+  await generateMaze();
+  // ?inference=name auto-watch
+  const params = new URLSearchParams(window.location.search);
+  if (params.has("inference")) {
+    document.querySelector('input[name=mode][value=inference]').click();
+    await populateModels();
+    // Prefer asset source, otherwise run.
+    const want = params.get("inference");
+    const sel = $("model");
+    for (const opt of sel.options) {
+      if (opt.value.endsWith("/" + want)) { sel.value = opt.value; break; }
+    }
+    $("watch").click();
+  }
+})();

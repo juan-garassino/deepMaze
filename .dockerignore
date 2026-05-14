@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.deepeval/
+maze_rl_runs/
+.venv/
+.git/
+.DS_Store
+*.egg-info/
+.github/

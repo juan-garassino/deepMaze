@@ -101,6 +101,11 @@ body.app {
 
 /* controls pane */
 .controls-pane { display: flex; flex-direction: column; gap: 12px; }
+.mode-toggle {
+  display: flex; gap: 12px; padding: 4px; font-size: 11px; color: var(--fg-dim);
+}
+.mode-toggle label { cursor: pointer; }
+.mode-toggle input { accent-color: var(--accent); }
 .toolbar {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
   padding: 6px; background: var(--panel-2);

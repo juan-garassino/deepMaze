@@ -5,6 +5,7 @@
   <title>deepMaze viewer</title>
   <link rel="stylesheet" href="/static/styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="/static/config.js"></script>
 </head>
 <body class="app">
   <header class="topbar">
@@ -47,6 +48,11 @@
 
     <!-- center: editor + controls -->
     <section class="pane controls-pane">
+      <div class="mode-toggle">
+        <label><input type="radio" name="mode" value="train" checked> Train new</label>
+        <label><input type="radio" name="mode" value="inference"> Load pretrained</label>
+      </div>
+
       <div class="toolbar">
         <span class="tb-label">paint:</span>
         <button data-paint="1" class="paint-btn active" title="floor">floor</button>
@@ -55,27 +61,48 @@
         <button data-paint="3" class="paint-btn" title="goal">goal</button>
         <button data-paint="4" class="paint-btn" title="lava">lava</button>
         <span class="tb-sep"></span>
-        <button id="dfsBtn" title="generate DFS maze">DFS gen</button>
-        <button id="clearBtn">clear</button>
+        <button id="regen">regenerate</button>
+        <button id="resetEdits">reset edits</button>
       </div>
 
-      <div class="config-grid">
+      <div class="config-grid" id="trainPanel">
+        <label>generator
+          <select id="generator">
+            <option value="dfs" selected>dfs</option>
+            <option value="random">random</option>
+            <option value="open">open</option>
+          </select>
+        </label>
         <label>agent
           <select id="agent">
             <option>q</option><option>dqn</option><option>ppo</option>
             <option>drqn</option><option>dtqn</option>
           </select>
         </label>
-        <label>w<input id="w" type="number" value="10" min="5" max="30"></label>
-        <label>h<input id="h" type="number" value="10" min="5" max="30"></label>
+        <label>w<input id="w" type="number" value="8" min="5" max="30"></label>
+        <label>h<input id="h" type="number" value="8" min="5" max="30"></label>
         <label>density<input id="density" type="number" value="0.2" step="0.05" min="0" max="0.9"></label>
-        <label>episodes<input id="episodes" type="number" value="100" min="1"></label>
-        <label>max steps<input id="max_steps" type="number" value="80" min="10"></label>
+        <label>n_treasures<input id="n_treasures" type="number" value="1" min="1" max="10"></label>
+        <label>episodes<input id="episodes" type="number" value="80" min="1"></label>
+        <label>max steps<input id="max_steps" type="number" value="60" min="10"></label>
         <label>partial K<input id="partial" type="number" value="" min="0" max="5"></label>
         <label>n_lava<input id="n_lava" type="number" value="0" min="0"></label>
-
-        <button id="regen">regenerate</button>
         <button id="train" class="primary">Train</button>
+      </div>
+
+      <div class="config-grid" id="inferencePanel" style="display:none">
+        <label style="grid-column: span 2;">model
+          <select id="model"></select>
+        </label>
+        <label style="grid-column: span 2;">maze source
+          <select id="mazeSource">
+            <option value="trained">same as trained</option>
+            <option value="fresh">fresh — same params</option>
+            <option value="custom">custom (edit board)</option>
+          </select>
+        </label>
+        <label>episodes<input id="infEpisodes" type="number" value="1" min="1" max="20"></label>
+        <button id="watch" class="primary">▶ Watch</button>
       </div>
 
       <div class="overlay-toggles">

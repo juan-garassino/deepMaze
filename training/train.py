@@ -98,6 +98,44 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
     return agent
 
 
+def simulate_episode_streaming(env: MazeEnvironment, agent, bus: EventBus,
+                               episode: int, max_steps: int,
+                               at_start: bool = False) -> float:
+    """Run a single greedy episode, emitting StepEvents to `bus`.
+
+    Used by /api/inference for pretrained-model playback. Reuses the same
+    wire format as train_agent's inline step emission so the JS client
+    doesn't need to know the difference.
+    """
+    state = env.reset(at_start=at_start)
+    if hasattr(agent, "on_episode_start"):
+        agent.on_episode_start()
+    total = 0.0
+    length = 0
+    for step in range(max_steps):
+        action = agent.move(state)
+        next_state, reward, done, _ = env.step(action)
+        total += float(reward)
+        length += 1
+        mem = agent.memory_snapshot() if hasattr(agent, "memory_snapshot") else None
+        bus.publish(StepEvent(
+            episode=episode, step=step,
+            state=np.asarray(next_state),
+            position=env.agent_positions[0],
+            action=int(action), reward=float(reward), done=bool(done),
+            q_values=None, memory=mem,
+        ))
+        state = next_state
+        if done:
+            break
+    bus.publish(EpisodeEvent(
+        episode=episode, total_reward=total, length=length,
+        epsilon=float(getattr(agent, "epsilon", 0.0)),
+        loss=None, success=total > 0,
+    ))
+    return total
+
+
 def simulate_episode(env: MazeEnvironment, agent, max_steps: int,
                      at_start: bool = False
                      ) -> tuple[list[np.ndarray], list[tuple[int, int]], list[int], float]:

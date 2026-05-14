@@ -17,24 +17,22 @@
   </header>
   <section class="runs-grid" id="grid"></section>
 
+  <script src="/static/config.js"></script>
   <script>
+    const API = (p) => (window.API_BASE_URL || "") + p;
     (async function() {
-      const r = await fetch("/api/runs/list");
+      const r = await fetch(API("/api/runs/list"));
       const body = r.ok ? await r.json() : { runs: [] };
       const grid = document.getElementById("grid");
       const status = document.getElementById("status");
-      if (!body.runs.length) {
-        status.textContent = "no runs found";
-        return;
-      }
+      if (!body.runs.length) { status.textContent = "no runs found"; return; }
       status.textContent = `${body.runs.length} runs`;
       for (const run of body.runs) {
-        const card = document.createElement("a");
-        card.href = `/runs/${encodeURIComponent(run.name)}`;
+        const card = document.createElement("div");
         card.className = "run-card";
         const replay = run.artifacts.find(a => a.endsWith(".webp") || a.endsWith(".gif"));
         const thumb = replay
-          ? `<div class="thumb"><img loading="lazy" src="/api/runs/${encodeURIComponent(run.name)}/file/${replay}"></div>`
+          ? `<div class="thumb"><img loading="lazy" src="${API('/api/runs/' + encodeURIComponent(run.name) + '/file/' + replay)}"></div>`
           : `<div class="thumb"></div>`;
         const s = run.summary || {};
         const meta = `
@@ -43,7 +41,13 @@
             avg_reward: ${s.avg_reward != null ? s.avg_reward.toFixed(2) : "—"}<br>
             episodes: ${s.episodes_trained ?? "—"}
           </div>`;
-        card.innerHTML = `${thumb}<h3>${run.name}</h3>${meta}`;
+        const enc = encodeURIComponent(run.name);
+        const links = `
+          <div style="margin-top:8px; display:flex; gap:8px;">
+            <a href="/runs/${enc}" style="color: var(--accent); text-decoration: none;">details →</a>
+            <a href="/?inference=${enc}" style="color: var(--accent); text-decoration: none;">▶ watch</a>
+          </div>`;
+        card.innerHTML = `${thumb}<h3>${run.name}</h3>${meta}${links}`;
         grid.appendChild(card);
       }
     })();

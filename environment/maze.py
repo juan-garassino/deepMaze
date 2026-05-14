@@ -33,7 +33,8 @@ class MazeEnvironment:
                  density: float = 0.2, seed: int | None = None,
                  generator: str = "random", ensure_solvable: bool = True,
                  n_lava: int = 0, lava_reward: float = -1.0,
-                 partial_view: int | None = None):
+                 partial_view: int | None = None,
+                 n_treasures: int = 1, collect_all: bool = False):
         if width < 5 or height < 5:
             raise ValueError("Maze must be at least 5x5")
         self.width = int(width)
@@ -45,21 +46,36 @@ class MazeEnvironment:
         self.n_lava = int(n_lava)
         self.lava_reward = float(lava_reward)
         self.partial_view = None if partial_view is None else int(partial_view)
+        self.n_treasures = max(1, int(n_treasures))
+        self.collect_all = bool(collect_all)
         self._rng = np.random.default_rng(seed)
         self.action_size = 4
 
         self.start_pos = (1, 1)
-        self.treasure_pos = (self.height - 2, self.width - 2)
+        # First treasure stays at the legacy corner; extras placed later.
+        self.treasure_positions: list[tuple[int, int]] = [
+            (self.height - 2, self.width - 2),
+        ]
         self.maze = self._generate_maze()
         if self.ensure_solvable:
             self._carve_path_if_needed()
         # markers may have been overwritten by carving — re-set
         self.maze[self.start_pos] = START
-        self.maze[self.treasure_pos] = EXIT
+        for p in self.treasure_positions:
+            self.maze[p] = EXIT
+        if self.n_treasures > 1:
+            self._place_extra_treasures(self.n_treasures - 1)
         if self.n_lava > 0:
             self._place_lava(self.n_lava)
+        # tracks per-episode collected treasures (used when collect_all)
+        self._remaining: set[tuple[int, int]] = set()
         self.agent_positions: list[tuple[int, int]] = []
         self.reset()
+
+    # back-compat alias
+    @property
+    def treasure_pos(self) -> tuple[int, int]:
+        return self.treasure_positions[0]
 
     # ------------------------------------------------------------------
     # generators
@@ -117,11 +133,11 @@ class MazeEnvironment:
             m[nr, nc] = LAND
             stack.append((nr, nc))
         # Goal may land on a wall for even-sized mazes; nudge it inward
-        gr, gc = self.treasure_pos
+        gr, gc = self.treasure_positions[0]
         if m[gr, gc] == HOLE:
             for ddr, ddc in [(0, 0), (-1, 0), (0, -1), (-1, -1)]:
                 if m[gr + ddr, gc + ddc] == LAND:
-                    self.treasure_pos = (gr + ddr, gc + ddc)
+                    self.treasure_positions[0] = (gr + ddr, gc + ddc)
                     break
             else:
                 m[gr, gc] = LAND  # fallback
@@ -148,21 +164,23 @@ class MazeEnvironment:
         return False
 
     def _carve_path_if_needed(self) -> None:
-        if self._connected(self.start_pos, self.treasure_pos):
-            return
-        # Dijkstra: walls cost 1, floors cost 0. Minimizes how many walls
-        # we knock down, so the original layout is preserved as much as
-        # possible. Border cells are excluded so the outer wall stays.
+        """Ensure connectivity from start to every treasure; carve walls
+        with minimum breakage (Dijkstra) for each disconnected goal."""
+        for target in self.treasure_positions:
+            if self._connected(self.start_pos, target):
+                continue
+            self._carve_one(target)
+
+    def _carve_one(self, target: tuple[int, int]) -> None:
         import heapq
         h, w = self.height, self.width
-        INF = float("inf")
-        dist = np.full((h, w), INF)
-        prev = {}
+        dist = np.full((h, w), float("inf"))
+        prev: dict = {}
         dist[self.start_pos] = 0.0
         pq = [(0.0, self.start_pos)]
         while pq:
             d, (r, c) = heapq.heappop(pq)
-            if (r, c) == self.treasure_pos:
+            if (r, c) == target:
                 break
             if d > dist[r, c]:
                 continue
@@ -176,29 +194,28 @@ class MazeEnvironment:
                     dist[nr, nc] = nd
                     prev[(nr, nc)] = (r, c)
                     heapq.heappush(pq, (nd, (nr, nc)))
-        cur = self.treasure_pos
+        cur = target
         while cur != self.start_pos and cur in prev:
             if self.maze[cur] == HOLE:
                 self.maze[cur] = LAND
             cur = prev[cur]
 
     def is_solvable(self) -> bool:
-        return self._connected(self.start_pos, self.treasure_pos)
+        return all(self._connected(self.start_pos, t)
+                   for t in self.treasure_positions)
 
     # ------------------------------------------------------------------
     # lava placement
     # ------------------------------------------------------------------
-    def _place_lava(self, n: int) -> None:
-        """Drop n lava cells on LAND cells that are not on the start->goal
-        shortest path. Guarantees the maze stays solvable."""
+    def _bfs_path(self, src: tuple[int, int], dst: tuple[int, int]) -> set:
+        """Cells on a BFS shortest path src->dst (LAND/EXIT/START walkable)."""
         import collections
         h, w = self.height, self.width
-        # BFS shortest path src -> dst (in number of cells)
-        prev = {self.start_pos: None}
-        q = collections.deque([self.start_pos])
+        prev = {src: None}
+        q = collections.deque([src])
         while q:
             r, c = q.popleft()
-            if (r, c) == self.treasure_pos:
+            if (r, c) == dst:
                 break
             for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 nr, nc = r + dr, c + dc
@@ -206,9 +223,43 @@ class MazeEnvironment:
                         and self.maze[nr, nc] != HOLE):
                     prev[(nr, nc)] = (r, c); q.append((nr, nc))
         path = set()
-        cur = self.treasure_pos
-        while cur is not None:
-            path.add(cur); cur = prev.get(cur)
+        cur = dst
+        while cur is not None and cur in prev:
+            path.add(cur); cur = prev[cur]
+        return path
+
+    def _place_extra_treasures(self, k: int) -> None:
+        """Place k additional EXIT cells on LAND cells reachable from start."""
+        h, w = self.height, self.width
+        # BFS-reachable LAND cells
+        import collections
+        seen = {self.start_pos}
+        q = collections.deque([self.start_pos])
+        while q:
+            r, c = q.popleft()
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = r + dr, c + dc
+                if (0 < nr < h - 1 and 0 < nc < w - 1
+                        and (nr, nc) not in seen
+                        and self.maze[nr, nc] != HOLE):
+                    seen.add((nr, nc)); q.append((nr, nc))
+        # exclude start + existing treasures
+        seen.discard(self.start_pos)
+        for p in self.treasure_positions:
+            seen.discard(p)
+        candidates = [c for c in seen if self.maze[c] == LAND]
+        self._rng.shuffle(candidates)
+        for p in candidates[:k]:
+            self.maze[p] = EXIT
+            self.treasure_positions.append(p)
+
+    def _place_lava(self, n: int) -> None:
+        """Drop n lava cells on LAND cells not on any start->treasure
+        shortest path. Guarantees every treasure remains reachable."""
+        h, w = self.height, self.width
+        path = set()
+        for t in self.treasure_positions:
+            path |= self._bfs_path(self.start_pos, t)
         candidates = [(i, j) for i in range(1, h - 1) for j in range(1, w - 1)
                       if self.maze[i, j] == LAND and (i, j) not in path]
         self._rng.shuffle(candidates)
@@ -224,6 +275,11 @@ class MazeEnvironment:
         return tuple(candidates[self._rng.integers(len(candidates))])
 
     def reset(self, at_start: bool = False) -> np.ndarray:
+        # Restore any treasures consumed during the previous episode.
+        for p in self.treasure_positions:
+            self.maze[p] = EXIT
+        self._remaining = set(self.treasure_positions) if self.collect_all else set()
+
         self.agent_positions = []
         if at_start:
             self.agent_positions.append(self.start_pos)
@@ -281,10 +337,16 @@ class MazeEnvironment:
             blocked = cell == HOLE or target in self.agent_positions
             if blocked:
                 target = (r, c)
-                reward = -0.1
-                done = False
-            elif target == self.treasure_pos:
-                reward, done = 1.0, True
+                reward, done = -0.1, False
+            elif cell == EXIT:
+                reward = 1.0
+                if self.collect_all:
+                    # consume this treasure; done only when all collected
+                    self.maze[target] = LAND
+                    self._remaining.discard(target)
+                    done = not self._remaining
+                else:
+                    done = True
             elif cell == LAVA:
                 reward, done = self.lava_reward, True
             else:

@@ -1,0 +1,28 @@
+# Two-service split: nginx frontend on 8080, FastAPI backend on 8000.
+# Pretrained models are mounted from ./assets; training runs from ./maze_rl_runs.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deepmaze-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./maze_rl_runs:/app/maze_rl_runs
+      - ./assets:/app/assets
+    environment:
+      - CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080
+      - PORT=8000
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: deepmaze-frontend
+    ports:
+      - "8080:80"
+    environment:
+      - API_BASE_URL=http://localhost:8000
+    depends_on:
+      - backend
