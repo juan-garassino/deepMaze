@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 from dqn_agent import DQNAgent
 from drqn_agent import DRQNAgent
+from dtqn_agent import DTQNAgent
 from maze import MazeEnvironment
 from ppo_agent import PPOAgent
 from q_agent import QAgent
@@ -30,6 +31,9 @@ def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
         return PPOAgent(state_size=state_size, action_size=action_size, **hp)
     if agent_type == "drqn":
         return DRQNAgent(state_size=state_size, action_size=action_size,
+                         grid_shape=grid_shape, **hp)
+    if agent_type == "dtqn":
+        return DTQNAgent(state_size=state_size, action_size=action_size,
                          grid_shape=grid_shape, **hp)
     raise ValueError(f"Unknown agent type: {agent_type}")
 

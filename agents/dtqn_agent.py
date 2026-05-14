@@ -1,15 +1,18 @@
-"""DRQN — DQN with a recurrent (LSTM) memory.
+"""DTQN — Deep Transformer Q-Network.
 
-v2 changes vs v1:
-- Per-step encoder is now GridAttnEncoder (spatial self-attention over the
-  partial view). The LSTM sees richer per-step features.
-- Prev-action embedding concatenated to the LSTM input. Helps the LSTM
-  encode "I just moved north", which is essential for backtracking out of
-  dead ends under partial observation.
+Memory mechanism is a causal Transformer over the trajectory instead of an
+LSTM. Per-step encoding is the same `GridAttnEncoder` (so the comparison
+DRQN vs DTQN is an honest A/B on the temporal aggregator).
 
-Online inference keeps a hidden state across `move()` calls within an
-episode; `on_episode_start()` resets it. Training: per-episode buffer,
-sample sub-sequences, burn-in then learn.
+Per-token representation:
+    token_t = encoder(obs_t) + action_emb(prev_action_t) + pos_emb(t)
+Causal-masked transformer encoder layers → Q-head at each position.
+
+Online inference: maintain a deque of last `max_ctx` (obs, prev_action)
+pairs; re-encode each step. `on_episode_start()` clears the deque.
+
+Training: episode buffer; sample `seq_len` sub-sequences; train Q-loss on
+positions after a burn-in prefix.
 """
 
 from __future__ import annotations
@@ -24,62 +27,70 @@ import torch.optim as optim
 from base_agent import BaseAgent
 from encoders import GridAttnEncoder
 
-# Per-step buffer record: (obs, prev_action, action, reward, next_obs, done).
-# prev_action is the action taken into this state; -1 means "no prev action".
 NO_ACTION = -1
 
 
-class DRQN(nn.Module):
+class DTQN(nn.Module):
     def __init__(self, h: int, w: int, action_size: int,
-                 enc_dim: int = 64, lstm_hidden: int = 128,
-                 action_emb_dim: int = 16):
+                 dim: int = 128, heads: int = 4, layers: int = 2,
+                 max_ctx: int = 64, ff_mult: int = 2):
         super().__init__()
         self.h, self.w = h, w
         self.action_size = action_size
-        self.enc = GridAttnEncoder(h, w, dim=enc_dim)
-        # +1 for NO_ACTION sentinel
-        self.action_emb = nn.Embedding(action_size + 1, action_emb_dim)
-        self.lstm = nn.LSTM(enc_dim + action_emb_dim, lstm_hidden,
-                            batch_first=True)
-        self.head = nn.Linear(lstm_hidden, action_size)
+        self.dim = dim
+        self.max_ctx = max_ctx
 
-    def forward(self, obs_seq: torch.Tensor, prev_actions: torch.Tensor,
-                hidden: tuple[torch.Tensor, torch.Tensor] | None = None):
-        """obs_seq: (B, T, h, w) long. prev_actions: (B, T) long (-1 = none)."""
+        self.enc = GridAttnEncoder(h, w, dim=dim)
+        self.action_emb = nn.Embedding(action_size + 1, dim)
+        self.pos_emb = nn.Parameter(torch.zeros(1, max_ctx, dim))
+        nn.init.normal_(self.pos_emb, std=0.02)
+        layer = nn.TransformerEncoderLayer(
+            d_model=dim, nhead=heads, dim_feedforward=dim * ff_mult,
+            batch_first=True, norm_first=True, activation="gelu",
+        )
+        self.tr = nn.TransformerEncoder(layer, num_layers=layers)
+        self.head = nn.Linear(dim, action_size)
+
+    @staticmethod
+    def causal_mask(T: int, device) -> torch.Tensor:
+        m = torch.full((T, T), float("-inf"), device=device)
+        return torch.triu(m, diagonal=1)
+
+    def forward(self, obs_seq: torch.Tensor, prev_actions: torch.Tensor):
+        """obs_seq: (B, T, h, w) long. prev_actions: (B, T) long (-1 = none).
+        Returns Q (B, T, A)."""
         B, T, H, W = obs_seq.shape
+        if T > self.max_ctx:
+            raise ValueError(f"context {T} > max_ctx {self.max_ctx}")
         flat = obs_seq.reshape(B * T, H, W)
-        feats = self.enc(flat).reshape(B, T, -1)               # (B, T, enc_dim)
-        a_idx = (prev_actions + 1).clamp(min=0)                 # shift -1 -> 0
-        a_emb = self.action_emb(a_idx)                          # (B, T, ae)
-        z = torch.cat([feats, a_emb], dim=-1)
-        out, hidden = self.lstm(z, hidden)
-        return self.head(out), hidden
+        feats = self.enc(flat).reshape(B, T, -1)             # (B, T, dim)
+        a_emb = self.action_emb((prev_actions + 1).clamp(min=0))
+        pos = self.pos_emb[:, :T, :]
+        z = feats + a_emb + pos
+        mask = self.causal_mask(T, z.device)
+        z = self.tr(z, mask=mask, is_causal=True)
+        return self.head(z)
 
 
 class EpisodeBuffer:
-    """Stores complete episodes with prev_action tracking."""
-
     def __init__(self, capacity: int):
-        self.capacity = capacity
         self.episodes: deque = deque(maxlen=capacity)
-        self._current: list[tuple] = []
+        self._cur: list[tuple] = []
         self._prev_a: int = NO_ACTION
 
     def reset_episode(self):
-        if self._current:
-            self.episodes.append(self._current)
-        self._current = []
+        if self._cur:
+            self.episodes.append(self._cur)
+        self._cur = []
         self._prev_a = NO_ACTION
 
     def add_step(self, obs, action, reward, next_obs, done):
-        self._current.append((
-            np.asarray(obs), int(self._prev_a), int(action),
-            float(reward), np.asarray(next_obs), float(done),
-        ))
+        self._cur.append((np.asarray(obs), int(self._prev_a), int(action),
+                          float(reward), np.asarray(next_obs), float(done)))
         self._prev_a = int(action)
         if done:
-            self.episodes.append(self._current)
-            self._current = []
+            self.episodes.append(self._cur)
+            self._cur = []
             self._prev_a = NO_ACTION
 
     def __len__(self):
@@ -104,13 +115,13 @@ class EpisodeBuffer:
         return obs, pa, act, rew, nobs, done
 
 
-class DRQNAgent(BaseAgent):
-    def __init__(self, state_size, action_size, grid_shape, learning_rate=1e-3,
-                 discount_factor=0.99, exploration_rate=1.0,
-                 exploration_decay=0.995, min_epsilon=0.05,
-                 batch_size=8, seq_len=8, burn_in=4, target_sync=100,
-                 buffer_capacity=200, lstm_hidden=128, enc_dim=64,
-                 action_emb_dim=16):
+class DTQNAgent(BaseAgent):
+    def __init__(self, state_size, action_size, grid_shape,
+                 learning_rate=3e-4, discount_factor=0.99,
+                 exploration_rate=1.0, exploration_decay=0.995,
+                 min_epsilon=0.05, batch_size=8, seq_len=16, burn_in=4,
+                 target_sync=100, buffer_capacity=200,
+                 dim=128, heads=4, layers=2, max_ctx=64):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.h, self.w = grid_shape
@@ -122,38 +133,46 @@ class DRQNAgent(BaseAgent):
         self.seq_len = seq_len
         self.burn_in = burn_in
         self.target_sync = target_sync
+        self.max_ctx = max_ctx
         self._step = 0
 
-        self.model = DRQN(self.h, self.w, action_size, enc_dim, lstm_hidden,
-                          action_emb_dim).to(self.device)
-        self.target_model = DRQN(self.h, self.w, action_size, enc_dim,
-                                 lstm_hidden, action_emb_dim).to(self.device)
+        self.model = DTQN(self.h, self.w, action_size, dim, heads, layers,
+                          max_ctx).to(self.device)
+        self.target_model = DTQN(self.h, self.w, action_size, dim, heads,
+                                 layers, max_ctx).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+
         self.buf = EpisodeBuffer(buffer_capacity)
-        self._hidden = None
+        # inference context
+        self._ctx_obs: deque = deque(maxlen=max_ctx)
+        self._ctx_pa: deque = deque(maxlen=max_ctx)
         self._last_action = NO_ACTION
 
     # ------------------------------------------------------------------
     def on_episode_start(self):
-        self._hidden = None
+        self._ctx_obs.clear()
+        self._ctx_pa.clear()
         self._last_action = NO_ACTION
         self.buf.reset_episode()
 
-    def _obs_tensor(self, obs):
-        x = np.asarray(obs).reshape(1, 1, self.h, self.w)
-        return torch.from_numpy(x).long().to(self.device)
+    def _ctx_tensors(self):
+        obs = np.stack(list(self._ctx_obs)).reshape(1, -1, self.h, self.w)
+        pa = np.array([list(self._ctx_pa)], dtype=np.int64)
+        return (torch.from_numpy(obs).long().to(self.device),
+                torch.from_numpy(pa).to(self.device))
 
     def move(self, state):
-        x = self._obs_tensor(state)
-        pa = torch.tensor([[self._last_action]],
-                          dtype=torch.long, device=self.device)
+        self._ctx_obs.append(np.asarray(state))
+        self._ctx_pa.append(self._last_action)
+        obs_t, pa_t = self._ctx_tensors()
         with torch.no_grad():
-            q, self._hidden = self.model(x, pa, self._hidden)
+            q_seq = self.model(obs_t, pa_t)
+        q_last = q_seq[0, -1]
         if (not self.deterministic) and np.random.random() < self.epsilon:
             a = int(np.random.randint(0, self.action_size))
         else:
-            a = int(q.squeeze(0).squeeze(0).argmax().item())
+            a = int(q_last.argmax().item())
         self._last_action = a
         return a
 
@@ -162,8 +181,7 @@ class DRQNAgent(BaseAgent):
         self.add_training_reward(reward)
         self._step += 1
         if done:
-            self._hidden = None
-            self._last_action = NO_ACTION
+            self.on_episode_start()  # also resets ctx; episode already committed
         if len(self.buf) >= max(2, self.batch_size):
             self._learn()
         self.epsilon = max(self.min_epsilon,
@@ -173,30 +191,28 @@ class DRQNAgent(BaseAgent):
         obs, pa, act, rew, nobs, dn = self.buf.sample(
             self.batch_size, self.seq_len)
         B, T, H, W = obs.shape
+        if T > self.max_ctx:
+            T = self.max_ctx
+            obs, pa, act, rew, nobs, dn = (
+                obs[:, :T], pa[:, :T], act[:, :T], rew[:, :T], nobs[:, :T], dn[:, :T])
         obs_t = torch.from_numpy(obs).long().to(self.device)
         nobs_t = torch.from_numpy(nobs).long().to(self.device)
         pa_t = torch.from_numpy(pa).to(self.device)
         act_t = torch.from_numpy(act).to(self.device)
         rew_t = torch.from_numpy(rew).to(self.device)
         dn_t = torch.from_numpy(dn).to(self.device)
-        # next-step "prev action" is the current action at each step
-        npa_t = act_t
+        npa_t = act_t  # next-step prev_action = current action
 
-        bi = min(self.burn_in, T - 1)
+        q_seq = self.model(obs_t, pa_t)
         with torch.no_grad():
-            _, hid = self.model(obs_t[:, :bi], pa_t[:, :bi], None)
-            _, hid_tgt = self.target_model(nobs_t[:, :bi], npa_t[:, :bi], None)
-
-        q_seq, _ = self.model(obs_t[:, bi:], pa_t[:, bi:], hid)
-        with torch.no_grad():
-            qt_seq, _ = self.target_model(nobs_t[:, bi:], npa_t[:, bi:], hid_tgt)
+            qt_seq = self.target_model(nobs_t, npa_t)
             max_next = qt_seq.max(dim=-1).values
 
+        # Train only on positions after burn-in.
+        bi = min(self.burn_in, T - 1)
         a_use = act_t[:, bi:]
-        r_use = rew_t[:, bi:]
-        d_use = dn_t[:, bi:]
-        current_q = q_seq.gather(2, a_use.unsqueeze(-1)).squeeze(-1)
-        target_q = r_use + (1 - d_use) * self.gamma * max_next
+        current_q = q_seq[:, bi:].gather(2, a_use.unsqueeze(-1)).squeeze(-1)
+        target_q = rew_t[:, bi:] + (1 - dn_t[:, bi:]) * self.gamma * max_next[:, bi:]
 
         loss = nn.functional.mse_loss(current_q, target_q)
         self.optimizer.zero_grad()
@@ -210,10 +226,11 @@ class DRQNAgent(BaseAgent):
 
     # ------------------------------------------------------------------
     def q_values(self, state):
-        x = self._obs_tensor(state)
+        x = np.asarray(state).reshape(1, 1, self.h, self.w)
+        x = torch.from_numpy(x).long().to(self.device)
         pa = torch.tensor([[NO_ACTION]], dtype=torch.long, device=self.device)
         with torch.no_grad():
-            q, _ = self.model(x, pa, None)
+            q = self.model(x, pa)
         return q.squeeze(0).squeeze(0).cpu().numpy()
 
     def q_values_batch(self, states):
@@ -222,7 +239,7 @@ class DRQNAgent(BaseAgent):
         pa = torch.full((x.shape[0], 1), NO_ACTION,
                         dtype=torch.long, device=self.device)
         with torch.no_grad():
-            q, _ = self.model(x, pa, None)
+            q = self.model(x, pa)
         return q.squeeze(1).cpu().numpy()
 
     def policy_snapshot(self):

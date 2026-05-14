@@ -25,7 +25,8 @@ from viz_events import EventBus  # noqa: E402
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="deepMaze — RL maze playground")
-    p.add_argument("--agent_type", choices=["q", "dqn", "ppo", "drqn"], default="q")
+    p.add_argument("--agent_type",
+                   choices=["q", "dqn", "ppo", "drqn", "dtqn"], default="q")
     p.add_argument("--net", choices=["mlp", "cnn"], default=None,
                    help="Network backbone for DQN/PPO; overrides hyperparam default.")
     p.add_argument("--maze_width", type=int, default=10)

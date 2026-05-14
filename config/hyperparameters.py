@@ -61,7 +61,26 @@ class DRQNHP:
     lstm_hidden: int = 128
 
 
-DEFAULTS = {"q": QHP(), "dqn": DQNHP(), "ppo": PPOHP(), "drqn": DRQNHP()}
+@dataclass(frozen=True)
+class DTQNHP:
+    learning_rate: float = 3e-4
+    discount_factor: float = 0.99
+    exploration_rate: float = 1.0
+    exploration_decay: float = 0.995
+    min_epsilon: float = 0.05
+    batch_size: int = 8
+    seq_len: int = 16
+    burn_in: int = 4
+    target_sync: int = 100
+    buffer_capacity: int = 200
+    dim: int = 128
+    heads: int = 4
+    layers: int = 2
+    max_ctx: int = 64
+
+
+DEFAULTS = {"q": QHP(), "dqn": DQNHP(), "ppo": PPOHP(),
+            "drqn": DRQNHP(), "dtqn": DTQNHP()}
 
 
 def defaults_for(agent_type: str) -> dict:
