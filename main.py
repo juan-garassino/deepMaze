@@ -30,6 +30,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--maze_height", type=int, default=10)
     p.add_argument("--n_agents", type=int, default=1)
     p.add_argument("--density", type=float, default=0.2)
+    p.add_argument("--generator", choices=["random", "dfs", "open"], default="random")
+    p.add_argument("--no_ensure_solvable", action="store_true")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--num_episodes", type=int, default=500)
     p.add_argument("--max_steps", type=int, default=200)
@@ -68,7 +70,9 @@ def run(args):
 
     env = MazeEnvironment(width=args.maze_width, height=args.maze_height,
                           n_agents=args.n_agents, density=args.density,
-                          seed=args.seed)
+                          seed=args.seed, generator=args.generator,
+                          ensure_solvable=not args.no_ensure_solvable)
+    mgr.log(f"Maze: gen={args.generator} solvable={env.is_solvable()}")
     agent_kw = {"discount_factor": args.discount_factor}
     if args.learning_rate is not None:
         agent_kw["learning_rate"] = args.learning_rate

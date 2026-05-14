@@ -30,27 +30,153 @@ class MazeEnvironment:
     metadata = {"render.modes": ["human"]}
 
     def __init__(self, width: int = 10, height: int = 10, n_agents: int = 1,
-                 density: float = 0.2, seed: Optional[int] = None):
+                 density: float = 0.2, seed: Optional[int] = None,
+                 generator: str = "random", ensure_solvable: bool = True):
+        if width < 5 or height < 5:
+            raise ValueError("Maze must be at least 5x5")
         self.width = int(width)
         self.height = int(height)
         self.density = float(density)
         self.n_agents = int(n_agents)
+        self.generator = generator
+        self.ensure_solvable = bool(ensure_solvable)
         self._rng = np.random.default_rng(seed)
         self.action_size = 4
 
+        self.start_pos = (1, 1)
+        self.treasure_pos = (self.height - 2, self.width - 2)
         self.maze = self._generate_maze()
-        self.start_pos = tuple(map(int, np.argwhere(self.maze == START)[0]))
-        self.treasure_pos = tuple(map(int, np.argwhere(self.maze == EXIT)[0]))
+        if self.ensure_solvable:
+            self._carve_path_if_needed()
+        # markers may have been overwritten by carving — re-set
+        self.maze[self.start_pos] = START
+        self.maze[self.treasure_pos] = EXIT
         self.agent_positions: List[Tuple[int, int]] = []
         self.reset()
 
+    # ------------------------------------------------------------------
+    # generators
+    # ------------------------------------------------------------------
     def _generate_maze(self) -> np.ndarray:
-        maze = self._rng.choice([HOLE, LAND], size=(self.height, self.width),
-                                p=[self.density, 1 - self.density]).astype(np.uint8)
-        maze[0, :] = maze[-1, :] = maze[:, 0] = maze[:, -1] = HOLE
-        maze[1, 1] = START
-        maze[self.height - 2, self.width - 2] = EXIT
-        return maze
+        if self.generator == "random":
+            return self._gen_random()
+        if self.generator == "dfs":
+            return self._gen_dfs()
+        if self.generator == "open":
+            return self._gen_open()
+        raise ValueError(f"Unknown generator: {self.generator!r}")
+
+    def _gen_random(self) -> np.ndarray:
+        m = self._rng.choice([HOLE, LAND], size=(self.height, self.width),
+                             p=[self.density, 1 - self.density]).astype(np.uint8)
+        m[0, :] = m[-1, :] = m[:, 0] = m[:, -1] = HOLE
+        m[self.start_pos] = START
+        m[self.treasure_pos] = EXIT
+        return m
+
+    def _gen_open(self) -> np.ndarray:
+        m = np.full((self.height, self.width), LAND, dtype=np.uint8)
+        m[0, :] = m[-1, :] = m[:, 0] = m[:, -1] = HOLE
+        m[self.start_pos] = START
+        m[self.treasure_pos] = EXIT
+        return m
+
+    def _gen_dfs(self) -> np.ndarray:
+        """Recursive-backtracker perfect maze on the odd-coord lattice.
+        Cells on odd coords become rooms; even coords are walls/passages.
+        Guarantees a single connected component covering all odd cells.
+        """
+        h, w = self.height, self.width
+        m = np.full((h, w), HOLE, dtype=np.uint8)
+        # snap start to nearest odd interior cell
+        sr = 1 if h > 2 else 0
+        sc = 1 if w > 2 else 0
+        m[sr, sc] = LAND
+        stack = [(sr, sc)]
+        dirs = [(-2, 0), (2, 0), (0, -2), (0, 2)]
+        while stack:
+            r, c = stack[-1]
+            cands = []
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 < nr < h - 1 and 0 < nc < w - 1 and m[nr, nc] == HOLE:
+                    cands.append((nr, nc, dr, dc))
+            if not cands:
+                stack.pop()
+                continue
+            i = int(self._rng.integers(len(cands)))
+            nr, nc, dr, dc = cands[i]
+            m[r + dr // 2, c + dc // 2] = LAND  # knock wall between
+            m[nr, nc] = LAND
+            stack.append((nr, nc))
+        # Goal may land on a wall for even-sized mazes; nudge it inward
+        gr, gc = self.treasure_pos
+        if m[gr, gc] == HOLE:
+            for ddr, ddc in [(0, 0), (-1, 0), (0, -1), (-1, -1)]:
+                if m[gr + ddr, gc + ddc] == LAND:
+                    self.treasure_pos = (gr + ddr, gc + ddc)
+                    break
+            else:
+                m[gr, gc] = LAND  # fallback
+        m[self.start_pos] = START
+        m[self.treasure_pos] = EXIT
+        return m
+
+    # ------------------------------------------------------------------
+    # solvability
+    # ------------------------------------------------------------------
+    def _connected(self, src: Tuple[int, int], dst: Tuple[int, int]) -> bool:
+        import collections
+        h, w = self.height, self.width
+        seen = {src}; q = collections.deque([src])
+        while q:
+            r, c = q.popleft()
+            if (r, c) == dst:
+                return True
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in seen \
+                        and self.maze[nr, nc] != HOLE:
+                    seen.add((nr, nc)); q.append((nr, nc))
+        return False
+
+    def _carve_path_if_needed(self) -> None:
+        if self._connected(self.start_pos, self.treasure_pos):
+            return
+        # Dijkstra: walls cost 1, floors cost 0. Minimizes how many walls
+        # we knock down, so the original layout is preserved as much as
+        # possible. Border cells are excluded so the outer wall stays.
+        import heapq
+        h, w = self.height, self.width
+        INF = float("inf")
+        dist = np.full((h, w), INF)
+        prev = {}
+        dist[self.start_pos] = 0.0
+        pq = [(0.0, self.start_pos)]
+        while pq:
+            d, (r, c) = heapq.heappop(pq)
+            if (r, c) == self.treasure_pos:
+                break
+            if d > dist[r, c]:
+                continue
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = r + dr, c + dc
+                if not (0 < nr < h - 1 and 0 < nc < w - 1):
+                    continue
+                cost = 1.0 if self.maze[nr, nc] == HOLE else 0.0
+                nd = d + cost
+                if nd < dist[nr, nc]:
+                    dist[nr, nc] = nd
+                    prev[(nr, nc)] = (r, c)
+                    heapq.heappush(pq, (nd, (nr, nc)))
+        cur = self.treasure_pos
+        while cur != self.start_pos and cur in prev:
+            if self.maze[cur] == HOLE:
+                self.maze[cur] = LAND
+            cur = prev[cur]
+
+    def is_solvable(self) -> bool:
+        return self._connected(self.start_pos, self.treasure_pos)
 
     def _find_empty_cell(self, taken: Sequence[Tuple[int, int]]) -> Tuple[int, int]:
         candidates = [(i, j) for i in range(1, self.height - 1)

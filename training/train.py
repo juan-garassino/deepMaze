@@ -28,7 +28,8 @@ def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
 def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                 bus: Optional[EventBus] = None,
                 policy_snapshot_every: int = 50,
-                emit_steps: bool = True):
+                emit_steps: bool = True,
+                emit_q_values: bool = False):
     if bus is not None:
         bus.publish(RunEvent(kind="start",
                              info={"num_episodes": num_episodes,
@@ -40,14 +41,15 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
         total = 0.0
         length = 0
         success = False
+        emit = bus is not None and emit_steps
         for step in range(max_steps):
             action = agent.move(state)
-            qv = agent.q_values(state) if bus is not None and emit_steps else None
+            qv = agent.q_values(state) if emit and emit_q_values else None
             next_state, reward, done, _ = env.step(action)
             agent.update(state, action, reward, next_state, done)
             total += float(reward)
             length += 1
-            if bus is not None and emit_steps:
+            if emit:
                 bus.publish(StepEvent(
                     episode=episode, step=step,
                     state=np.asarray(next_state),

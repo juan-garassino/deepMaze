@@ -82,28 +82,16 @@ class MazeManager:
         self.log(f"Results saved to {p}")
         return p
 
-    def save_model(self, agent, filename: str = "model.pt") -> Path:
-        p = self.run_dir / filename
-        try:
+    def save_model(self, agent, filename: str = "model") -> Path:
+        if hasattr(agent, "Q"):  # tabular
+            p = self.run_dir / f"{filename}.pkl"
+            with open(p, "wb") as f:
+                pickle.dump({k: v for k, v in agent.Q.items()}, f)
+        else:
             import torch
-            if hasattr(agent, "model"):
-                torch.save(agent.model.state_dict(), p)
-            elif hasattr(agent, "ac"):
-                torch.save(agent.ac.state_dict(), p)
-            else:
-                with open(p.with_suffix(".pkl"), "wb") as f:
-                    pickle.dump(getattr(agent, "Q", agent), f)
-                p = p.with_suffix(".pkl")
-        except Exception as e:
-            self.log(f"Torch save failed ({e}); falling back to pickle", "warning")
-            payload = getattr(agent, "Q", None)
-            if payload is not None:
-                payload = {k: v for k, v in payload.items()}  # strip defaultdict lambda
-            else:
-                payload = agent
-            with open(p.with_suffix(".pkl"), "wb") as f:
-                pickle.dump(payload, f)
-            p = p.with_suffix(".pkl")
+            module = getattr(agent, "model", None) or getattr(agent, "ac", None)
+            p = self.run_dir / f"{filename}.pt"
+            torch.save(module.state_dict(), p)
         self.log(f"Model saved to {p}")
         return p
 
