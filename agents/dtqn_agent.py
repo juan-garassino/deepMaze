@@ -30,6 +30,30 @@ from encoders import GridAttnEncoder
 NO_ACTION = -1
 
 
+class TransformerBlock(nn.Module):
+    """Pre-norm transformer block exposing attention weights for viz."""
+
+    def __init__(self, dim: int, heads: int, ff_mult: int = 2):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.ln2 = nn.LayerNorm(dim)
+        self.ff = nn.Sequential(
+            nn.Linear(dim, dim * ff_mult), nn.GELU(),
+            nn.Linear(dim * ff_mult, dim),
+        )
+        self.last_attn: torch.Tensor | None = None  # (B, T, T) per-block weights
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        h = self.ln1(x)
+        out, w = self.attn(h, h, h, attn_mask=mask, need_weights=True,
+                           average_attn_weights=True)
+        self.last_attn = w.detach()
+        x = x + out
+        x = x + self.ff(self.ln2(x))
+        return x
+
+
 class DTQN(nn.Module):
     def __init__(self, h: int, w: int, action_size: int,
                  dim: int = 128, heads: int = 4, layers: int = 2,
@@ -44,11 +68,10 @@ class DTQN(nn.Module):
         self.action_emb = nn.Embedding(action_size + 1, dim)
         self.pos_emb = nn.Parameter(torch.zeros(1, max_ctx, dim))
         nn.init.normal_(self.pos_emb, std=0.02)
-        layer = nn.TransformerEncoderLayer(
-            d_model=dim, nhead=heads, dim_feedforward=dim * ff_mult,
-            batch_first=True, norm_first=True, activation="gelu",
-        )
-        self.tr = nn.TransformerEncoder(layer, num_layers=layers)
+        self.blocks = nn.ModuleList([
+            TransformerBlock(dim, heads, ff_mult) for _ in range(layers)
+        ])
+        self.ln_f = nn.LayerNorm(dim)
         self.head = nn.Linear(dim, action_size)
 
     @staticmethod
@@ -68,8 +91,13 @@ class DTQN(nn.Module):
         pos = self.pos_emb[:, :T, :]
         z = feats + a_emb + pos
         mask = self.causal_mask(T, z.device)
-        z = self.tr(z, mask=mask, is_causal=True)
-        return self.head(z)
+        for blk in self.blocks:
+            z = blk(z, mask)
+        return self.head(self.ln_f(z))
+
+    def last_layer_attention(self) -> torch.Tensor | None:
+        """Attention weights from the last block, last forward pass."""
+        return self.blocks[-1].last_attn
 
 
 class EpisodeBuffer:
@@ -225,6 +253,16 @@ class DTQNAgent(BaseAgent):
             self.target_model.load_state_dict(self.model.state_dict())
 
     # ------------------------------------------------------------------
+    def memory_snapshot(self):
+        """Attention weights from the last forward pass: shape (T,) — what
+        the current (last) token attends to over the context.
+        Returns None if no forward has happened in this episode yet."""
+        attn = self.model.last_layer_attention()
+        if attn is None:
+            return None
+        last_row = attn[0, -1].cpu().numpy()  # (T,)
+        return {"kind": "attention_row", "data": last_row.tolist()}
+
     def q_values(self, state):
         x = np.asarray(state).reshape(1, 1, self.h, self.w)
         x = torch.from_numpy(x).long().to(self.device)

@@ -145,6 +145,12 @@ class MazeManager:
         self.log(f"Policy heatmap saved to {out}")
         return out
 
+    def save_html_report(self) -> Path:
+        from report import write_html_report
+        out = write_html_report(self.run_dir)
+        self.log(f"HTML report saved to {out}")
+        return out
+
     def save_visitation(self, trajectories: list[list], env) -> Path:
         from visualizations import plot_visitation
         out = self.viz_dir() / "visitation.png"

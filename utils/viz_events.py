@@ -26,6 +26,7 @@ class StepEvent:
     reward: float
     done: bool
     q_values: np.ndarray | None = None
+    memory: dict | None = None  # {'kind': 'lstm_hidden'|'attention_row', 'data': [...]}
 
     def to_json(self) -> dict:
         """Backwards-compat: full payload. Prefer to_json_delta for live SSE."""
@@ -42,6 +43,7 @@ class StepEvent:
             "reward": float(self.reward),
             "done": bool(self.done),
             "q_values": None if self.q_values is None else self.q_values.tolist(),
+            "memory": self.memory,
         }
 
     def to_json_delta(self) -> dict:
@@ -54,6 +56,7 @@ class StepEvent:
             "reward": float(self.reward),
             "done": bool(self.done),
             "q_values": None if self.q_values is None else self.q_values.tolist(),
+            "memory": self.memory,
         }
 
 

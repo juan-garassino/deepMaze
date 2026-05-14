@@ -190,22 +190,29 @@ def run(args):
         mgr.log(f"Rollout viz skipped: {e}", "warning")
 
     # Replay WebP from one greedy episode starting at the canonical Start cell.
+    # The renderer needs full-view frames (the static maze + agent position),
+    # regardless of what the agent actually saw during the rollout.
     agent.set_deterministic(True)
     try:
-        states, positions, _, total = simulate_episode(env, agent, args.max_steps,
-                                                      at_start=True)
+        _, positions, _, total = simulate_episode(env, agent, args.max_steps,
+                                                  at_start=True)
     finally:
         agent.set_deterministic(False)
 
+    full_frames = [env.maze.copy() for _ in positions]
     sprites = _load_sprites(args)
     rm = RenderMaze(sprites)
-    q_seq = [agent.q_values(s) for s in states] if hasattr(agent, "q_values") else None
-    ReplayRecorder(rm).feed(states, positions, q_seq)
+    ReplayRecorder(rm).feed(full_frames, positions, None)
     mgr.save_replay(rm, fmt=args.replay_fmt,
                     sprite_size=args.sprite_size,
                     frame_skip=args.frame_skip,
                     max_frames=args.max_frames)
     mgr.log(f"Replay episode reward: {total:.3f}")
+
+    try:
+        mgr.save_html_report()
+    except Exception as e:
+        mgr.log(f"HTML report skipped: {e}", "warning")
 
     mgr.log(f"Run dir: {mgr.run_dir}")
     if web_thread is not None:

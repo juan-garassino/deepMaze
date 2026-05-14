@@ -6,36 +6,90 @@
   <link rel="stylesheet" href="/static/styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
-<body>
-  <header>
+<body class="app">
+  <header class="topbar">
     <h1>deepMaze</h1>
-    <div class="controls">
-      <label>w<input id="w" type="number" value="10" min="5" max="30"></label>
-      <label>h<input id="h" type="number" value="10" min="5" max="30"></label>
-      <label>density<input id="density" type="number" value="0.2" step="0.05" min="0" max="0.9"></label>
-      <label>agent
-        <select id="agent">
-          <option>q</option><option>dqn</option><option>ppo</option>
-        </select>
-      </label>
-      <label>episodes<input id="episodes" type="number" value="200" min="10"></label>
-      <label>max steps<input id="max_steps" type="number" value="200" min="10"></label>
-      <button id="regen">Regenerate maze</button>
-      <button id="train">Train</button>
-      <span id="status">idle</span>
-    </div>
+    <nav>
+      <a href="/" class="active">Train</a>
+      <a href="/runs">Runs</a>
+      <a href="/memory">Memory</a>
+    </nav>
+    <span class="status" id="status">idle</span>
   </header>
 
-  <main>
-    <section class="board">
+  <main class="three-pane">
+    <!-- left: maze board + memory strip -->
+    <section class="pane board">
       <canvas id="maze" width="480" height="480"></canvas>
+
+      <div class="memory-strip">
+        <div class="memory-label" id="memLabel">memory: —</div>
+        <canvas id="memory" width="480" height="44"></canvas>
+        <a href="/memory" class="memory-detail">full memory →</a>
+      </div>
+
+      <div class="scrubber">
+        <button id="playBtn" title="play / pause">▶</button>
+        <button id="stepBtn" title="step one frame">⏭</button>
+        <input id="scrub" type="range" min="0" max="0" value="0" />
+        <span id="frameLabel">0 / 0</span>
+      </div>
+
       <div class="legend">
-        click cells to toggle: empty → wall → start → goal → empty
+        <span class="dot wall"></span>wall
+        <span class="dot floor"></span>floor
+        <span class="dot start"></span>start
+        <span class="dot goal"></span>goal
+        <span class="dot lava"></span>lava
+        <span class="dot agent"></span>agent
       </div>
     </section>
-    <section class="charts">
-      <canvas id="rewardChart"></canvas>
-      <canvas id="lengthChart"></canvas>
+
+    <!-- center: editor + controls -->
+    <section class="pane controls-pane">
+      <div class="toolbar">
+        <span class="tb-label">paint:</span>
+        <button data-paint="1" class="paint-btn active" title="floor">floor</button>
+        <button data-paint="0" class="paint-btn" title="wall">wall</button>
+        <button data-paint="2" class="paint-btn" title="start">start</button>
+        <button data-paint="3" class="paint-btn" title="goal">goal</button>
+        <button data-paint="4" class="paint-btn" title="lava">lava</button>
+        <span class="tb-sep"></span>
+        <button id="dfsBtn" title="generate DFS maze">DFS gen</button>
+        <button id="clearBtn">clear</button>
+      </div>
+
+      <div class="config-grid">
+        <label>agent
+          <select id="agent">
+            <option>q</option><option>dqn</option><option>ppo</option>
+            <option>drqn</option><option>dtqn</option>
+          </select>
+        </label>
+        <label>w<input id="w" type="number" value="10" min="5" max="30"></label>
+        <label>h<input id="h" type="number" value="10" min="5" max="30"></label>
+        <label>density<input id="density" type="number" value="0.2" step="0.05" min="0" max="0.9"></label>
+        <label>episodes<input id="episodes" type="number" value="100" min="1"></label>
+        <label>max steps<input id="max_steps" type="number" value="80" min="10"></label>
+        <label>partial K<input id="partial" type="number" value="" min="0" max="5"></label>
+        <label>n_lava<input id="n_lava" type="number" value="0" min="0"></label>
+
+        <button id="regen">regenerate</button>
+        <button id="train" class="primary">Train</button>
+      </div>
+
+      <div class="overlay-toggles">
+        <label><input type="checkbox" id="ovArrows" checked>policy arrows</label>
+        <label><input type="checkbox" id="ovVisits">visitation trail</label>
+      </div>
+    </section>
+
+    <!-- right: live charts -->
+    <section class="pane charts">
+      <div class="chart-cell"><canvas id="rewardChart"></canvas></div>
+      <div class="chart-cell"><canvas id="lengthChart"></canvas></div>
+      <div class="chart-cell"><canvas id="lossChart"></canvas></div>
+      <div class="chart-cell"><canvas id="epsChart"></canvas></div>
     </section>
   </main>
 

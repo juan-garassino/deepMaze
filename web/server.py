@@ -34,6 +34,30 @@ from viz_events import EpisodeEvent, EventBus, PolicyEvent, RunEvent, StepEvent 
 STATIC = os.path.join(_HERE, "static")
 
 
+def _render_detail(name: str, results: dict, artifacts: list[str]) -> str:
+    """Server-rendered run detail page when no static viz/report.html exists."""
+    parts = ["<html><head><meta charset='utf-8'>",
+             "<link rel='stylesheet' href='/static/styles.css'>",
+             f"<title>{name}</title></head><body class='app'>",
+             "<header class='topbar'><h1>deepMaze</h1>",
+             "<nav><a href='/'>Train</a><a href='/runs' class='active'>Runs</a>",
+             "<a href='/memory'>Memory</a></nav></header>",
+             "<main class='detail'>",
+             f"<h2 class='detail-full'>{name}</h2>"]
+    if results:
+        summary = "\n".join(f"{k}: {v}" for k, v in results.items()
+                            if not isinstance(v, (list, dict)))
+        parts.append(f"<pre class='summary detail-full'>{summary}</pre>")
+    for a in artifacts:
+        url = f"/api/runs/{name}/file/{a}"
+        if a.endswith(".webp") or a.endswith(".gif") or a.endswith(".mp4"):
+            parts.append(f"<div><h2>{a}</h2><img src='{url}' alt='{a}'></div>")
+        elif a.endswith(".png"):
+            parts.append(f"<div><h2>{a}</h2><img src='{url}' alt='{a}'></div>")
+    parts.append("</main></body></html>")
+    return "\n".join(parts)
+
+
 def _event_to_json(ev) -> str:
     if isinstance(ev, StepEvent):
         payload = ev.to_json_full() if ev.step == 0 else ev.to_json_delta()
@@ -150,6 +174,55 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
+
+    @app.post("/api/maze/generate")
+    async def maze_generate(req: Request):
+        """Return a server-generated maze. Used by the Web editor's DFS button."""
+        import importlib
+        body = await req.json()
+        maze_mod = importlib.import_module("maze")
+        env = maze_mod.MazeEnvironment(
+            width=body.get("width", 10),
+            height=body.get("height", 10),
+            density=body.get("density", 0.2),
+            generator=body.get("generator", "dfs"),
+            n_lava=body.get("n_lava", 0),
+            seed=body.get("seed"),
+        )
+        return {"maze": env.maze.tolist(),
+                "start": list(env.start_pos),
+                "goal": list(env.treasure_pos)}
+
+    @app.get("/runs")
+    def runs_page():
+        return FileResponse(os.path.join(STATIC, "runs.html"))
+
+    @app.get("/runs/{name}")
+    def run_detail_page(name: str):
+        # Inline-render a one-page detail view; falls back to viz/report.html
+        # if it already exists in the run directory.
+        run_dir = os.path.join(os.getcwd(), "maze_rl_runs", name)
+        report = os.path.join(run_dir, "viz", "report.html")
+        if os.path.exists(report):
+            return FileResponse(report)
+        if not os.path.isdir(run_dir):
+            raise HTTPException(404, name)
+        results = {}
+        rp = os.path.join(run_dir, "results.json")
+        if os.path.exists(rp):
+            try: results = json.loads(open(rp).read())
+            except Exception: pass
+        artifacts = []
+        viz_dir = os.path.join(run_dir, "viz")
+        if os.path.isdir(viz_dir):
+            artifacts = sorted(os.listdir(viz_dir))
+        html = _render_detail(name, results, artifacts)
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(html)
+
+    @app.get("/memory")
+    def memory_page():
+        return FileResponse(os.path.join(STATIC, "memory.html"))
 
     @app.get("/api/runs/list")
     def list_runs():

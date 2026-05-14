@@ -1,26 +1,46 @@
 /* deepMaze browser client.
- * Renders maze + agent on <canvas>, draws-cells editor, SSE event consumer,
- * Chart.js live charts. No build step.
+ *
+ * Renders:
+ *   - editable maze on <canvas#maze> (paint-mode toolbar, click+drag)
+ *   - agent live + scrubable frame history
+ *   - memory strip below the maze (LSTM hidden / DTQN attention)
+ *   - four Chart.js live charts (reward / length / loss / epsilon)
+ *   - policy-arrow + visitation overlays
+ *
+ * No build step. Chart.js loaded via CDN.
  */
 
-const HOLE = 0, LAND = 1, START = 2, EXIT = 3;
+const HOLE = 0, LAND = 1, START = 2, EXIT = 3, LAVA = 4;
 const COLORS = {
   [HOLE]:  "#1a1a1a",
   [LAND]:  "#cfd0d3",
-  [START]: "#3fa75a",
+  [START]: "#6ec07b",
   [EXIT]:  "#e8c84a",
+  [LAVA]:  "#e25555",
 };
-const AGENT_TINTS = ["#3a7db0", "#e25555", "#4ec07b", "#d28dff"];
+const AGENT_COLOR = "#4ea8ff";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("maze");
 const ctx = canvas.getContext("2d");
+const memCanvas = $("memory");
+const memCtx = memCanvas.getContext("2d");
 
 let W = +$("w").value, H = +$("h").value;
 let maze = newMaze(W, H, +$("density").value);
 let agentPos = null;
-let cycle = [LAND, HOLE, START, EXIT]; // toggle order on click
+let paintMode = LAND;
+let paintHeld = false;
 
+// Live state.
+let frames = [];          // [{maze, pos, q_values, memory}]
+let frameIdx = 0;
+let playing = true;
+let policyArrows = null;  // (H × W × 4) recent policy snapshot
+let visitTrail = new Map();  // "i,j" -> recency score
+let overlayArrows = true, overlayVisits = false;
+
+// --- maze helpers -------------------------------------------------------
 function newMaze(w, h, density) {
   const m = Array.from({length: h}, (_, i) =>
     Array.from({length: w}, (_, j) => {
@@ -32,71 +52,234 @@ function newMaze(w, h, density) {
   m[h - 2][w - 2] = EXIT;
   return m;
 }
-
-function cellSize() {
-  return Math.floor(Math.min(canvas.width / W, canvas.height / H));
-}
+function cellSize() { return Math.floor(Math.min(canvas.width / W, canvas.height / H)); }
 
 function draw() {
   const s = cellSize();
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // base tiles
   for (let i = 0; i < H; i++) {
     for (let j = 0; j < W; j++) {
       ctx.fillStyle = COLORS[maze[i][j]] || COLORS[LAND];
       ctx.fillRect(j * s, i * s, s - 1, s - 1);
     }
   }
+  // visitation trail (fade)
+  if (overlayVisits) {
+    for (const [k, v] of visitTrail.entries()) {
+      const [i, j] = k.split(",").map(Number);
+      ctx.fillStyle = `rgba(78, 168, 255, ${0.25 * v})`;
+      ctx.fillRect(j * s, i * s, s, s);
+    }
+  }
+  // policy arrows
+  if (overlayArrows && policyArrows) {
+    ctx.strokeStyle = "#ffffffaa";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < H; i++) {
+      for (let j = 0; j < W; j++) {
+        if (maze[i][j] === HOLE || maze[i][j] === LAVA) continue;
+        const q = policyArrows[i] && policyArrows[i][j];
+        if (!q) continue;
+        const a = argmax(q);
+        drawArrow(j * s + s/2, i * s + s/2, a, s * 0.3);
+      }
+    }
+  }
+  // agent
   if (agentPos) {
     const [r, c] = agentPos;
-    ctx.fillStyle = AGENT_TINTS[0];
+    ctx.fillStyle = AGENT_COLOR;
     ctx.beginPath();
-    ctx.arc(c * s + s / 2, r * s + s / 2, s * 0.35, 0, 2 * Math.PI);
+    ctx.arc(c * s + s/2, r * s + s/2, s * 0.36, 0, 2 * Math.PI);
     ctx.fill();
   }
 }
 
-canvas.addEventListener("click", (e) => {
+function argmax(a) {
+  let bi = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[bi]) bi = i; return bi;
+}
+
+function drawArrow(cx, cy, action, len) {
+  // 0=up, 1=right, 2=down, 3=left
+  const d = [[0, -1], [1, 0], [0, 1], [-1, 0]][action];
+  const x2 = cx + d[0] * len, y2 = cy + d[1] * len;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x2, y2); ctx.stroke();
+  const ah = len * 0.35;
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - d[0]*ah + d[1]*ah*0.5, y2 - d[1]*ah - d[0]*ah*0.5);
+  ctx.lineTo(x2 - d[0]*ah - d[1]*ah*0.5, y2 - d[1]*ah + d[0]*ah*0.5);
+  ctx.closePath(); ctx.fillStyle = "#ffffffaa"; ctx.fill();
+}
+
+// --- toolbar / editor ---------------------------------------------------
+document.querySelectorAll(".paint-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".paint-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    paintMode = +btn.dataset.paint;
+  });
+});
+
+function paintAt(e) {
   const rect = canvas.getBoundingClientRect();
   const s = cellSize();
   const j = Math.floor((e.clientX - rect.left) / s);
   const i = Math.floor((e.clientY - rect.top) / s);
   if (i <= 0 || j <= 0 || i >= H - 1 || j >= W - 1) return;
-  const cur = maze[i][j];
-  const next = cycle[(cycle.indexOf(cur) + 1) % cycle.length];
-  // Ensure unique START and EXIT.
-  if (next === START) clear(START);
-  if (next === EXIT) clear(EXIT);
-  maze[i][j] = next;
+  if (paintMode === START) clearVal(START);
+  if (paintMode === EXIT) clearVal(EXIT);
+  maze[i][j] = paintMode;
   draw();
-});
-
-function clear(v) {
-  for (let i = 0; i < H; i++)
-    for (let j = 0; j < W; j++)
-      if (maze[i][j] === v) maze[i][j] = LAND;
 }
+function clearVal(v) {
+  for (let i = 0; i < H; i++) for (let j = 0; j < W; j++)
+    if (maze[i][j] === v) maze[i][j] = LAND;
+}
+canvas.addEventListener("mousedown", (e) => { paintHeld = true; paintAt(e); });
+canvas.addEventListener("mousemove", (e) => { if (paintHeld) paintAt(e); });
+window.addEventListener("mouseup", () => { paintHeld = false; });
 
 $("regen").addEventListener("click", () => {
   W = +$("w").value; H = +$("h").value;
   maze = newMaze(W, H, +$("density").value);
-  agentPos = null;
+  resetLive(); draw();
+});
+$("clearBtn").addEventListener("click", () => {
+  W = +$("w").value; H = +$("h").value;
+  maze = newMaze(W, H, 0);
+  resetLive(); draw();
+});
+$("dfsBtn").addEventListener("click", async () => {
+  W = +$("w").value; H = +$("h").value;
+  $("status").textContent = "generating DFS…";
+  // Use server-side generator: request 1-episode train that just produces an env.
+  const r = await fetch("/api/maze/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ width: W, height: H, generator: "dfs",
+                           n_lava: +$("n_lava").value || 0,
+                           seed: Math.floor(Math.random() * 1e6) }),
+  });
+  if (r.ok) {
+    const body = await r.json();
+    maze = body.maze;
+    resetLive(); draw();
+    $("status").textContent = "ready";
+  } else {
+    $("status").textContent = "dfs gen failed";
+  }
+});
+
+$("ovArrows").addEventListener("change", e => { overlayArrows = e.target.checked; draw(); });
+$("ovVisits").addEventListener("change", e => { overlayVisits = e.target.checked; draw(); });
+
+// --- charts -------------------------------------------------------------
+const chartOpts = {
+  animation: false, responsive: true, maintainAspectRatio: false,
+  scales: { x: { ticks: { color: "#888" }, grid: { color: "#222" } },
+            y: { ticks: { color: "#888" }, grid: { color: "#222" } } },
+  plugins: { legend: { labels: { color: "#ccc", font: { size: 10 } } } },
+  elements: { line: { tension: 0.2 }, point: { radius: 0 } },
+};
+function mkChart(id, label, color) {
+  return new Chart($(id), {
+    type: "line",
+    data: { labels: [], datasets: [{ label, data: [], borderColor: color, borderWidth: 1.5 }] },
+    options: chartOpts,
+  });
+}
+const rewardChart = mkChart("rewardChart", "reward", "#4ea8ff");
+const lengthChart = mkChart("lengthChart", "length", "#ffb479");
+const lossChart   = mkChart("lossChart",   "loss",   "#e25555");
+const epsChart    = mkChart("epsChart",    "epsilon","#6ec07b");
+
+function pushChart(c, x, y) {
+  c.data.labels.push(x); c.data.datasets[0].data.push(y);
+}
+function flushCharts() {
+  rewardChart.update("none"); lengthChart.update("none");
+  lossChart.update("none"); epsChart.update("none");
+}
+function resetCharts() {
+  for (const c of [rewardChart, lengthChart, lossChart, epsChart]) {
+    c.data.labels = []; c.data.datasets[0].data = []; c.update("none");
+  }
+}
+
+// --- memory strip -------------------------------------------------------
+function drawMemory(mem) {
+  const w = memCanvas.width, h = memCanvas.height;
+  memCtx.fillStyle = "#1c232c"; memCtx.fillRect(0, 0, w, h);
+  if (!mem) {
+    $("memLabel").textContent = "memory: —";
+    return;
+  }
+  $("memLabel").textContent = mem.kind === "lstm_hidden"
+    ? "memory: LSTM hidden state"
+    : "memory: attention over past steps";
+  const d = mem.data || [];
+  if (!d.length) return;
+  const mx = Math.max(...d.map(Math.abs)) || 1;
+  const cw = w / d.length;
+  for (let i = 0; i < d.length; i++) {
+    const v = d[i] / mx;
+    if (mem.kind === "attention_row") {
+      const a = Math.max(0, Math.min(1, v));
+      memCtx.fillStyle = `rgba(78, 168, 255, ${a})`;
+      memCtx.fillRect(i * cw, 0, cw + 1, h);
+    } else {
+      // diverging blue/red
+      const a = Math.min(1, Math.abs(v));
+      memCtx.fillStyle = v >= 0
+        ? `rgba(78, 168, 255, ${a})`
+        : `rgba(226, 85, 85, ${a})`;
+      memCtx.fillRect(i * cw, 0, cw + 1, h);
+    }
+  }
+}
+
+// --- scrubber + frame history ------------------------------------------
+function renderFrame(idx) {
+  if (!frames[idx]) return;
+  const f = frames[idx];
+  maze = f.maze; agentPos = f.pos;
+  drawMemory(f.memory);
   draw();
+  $("frameLabel").textContent = `${idx + 1} / ${frames.length}`;
+  $("scrub").max = frames.length - 1;
+  $("scrub").value = idx;
+}
+function pushFrame(f) {
+  frames.push(f);
+  if (playing) { frameIdx = frames.length - 1; renderFrame(frameIdx); }
+}
+function resetLive() {
+  frames = []; frameIdx = 0; agentPos = null; policyArrows = null;
+  visitTrail.clear();
+  $("scrub").max = 0; $("scrub").value = 0;
+  $("frameLabel").textContent = "0 / 0";
+  drawMemory(null);
+}
+$("playBtn").addEventListener("click", () => {
+  playing = !playing;
+  $("playBtn").textContent = playing ? "▶" : "⏸";
+  if (playing && frames.length) { frameIdx = frames.length - 1; renderFrame(frameIdx); }
+});
+$("stepBtn").addEventListener("click", () => {
+  playing = false; $("playBtn").textContent = "⏸";
+  frameIdx = Math.min(frames.length - 1, frameIdx + 1);
+  renderFrame(frameIdx);
+});
+$("scrub").addEventListener("input", () => {
+  playing = false; $("playBtn").textContent = "⏸";
+  frameIdx = +$("scrub").value;
+  renderFrame(frameIdx);
 });
 
-// --- charts ---------------------------------------------------------------
-const rewardChart = new Chart($("rewardChart"), {
-  type: "line",
-  data: { labels: [], datasets: [{ label: "reward", data: [], borderColor: "#7ec7ff", tension: 0.2, pointRadius: 0 }] },
-  options: { animation: false, scales: { x: { ticks: { color: "#888" } }, y: { ticks: { color: "#888" } } }, plugins: { legend: { labels: { color: "#ccc" } } } },
-});
-const lengthChart = new Chart($("lengthChart"), {
-  type: "line",
-  data: { labels: [], datasets: [{ label: "length", data: [], borderColor: "#ffb479", tension: 0.2, pointRadius: 0 }] },
-  options: { animation: false, scales: { x: { ticks: { color: "#888" } }, y: { ticks: { color: "#888" } } }, plugins: { legend: { labels: { color: "#ccc" } } } },
-});
-
-// --- SSE -----------------------------------------------------------------
+// --- SSE ----------------------------------------------------------------
 let es = null;
 function startStream() {
   if (es) es.close();
@@ -104,58 +287,60 @@ function startStream() {
   es.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
     if (ev.type === "step") {
-      // Full payload at episode start: rebuild maze + place agent.
-      const state = ev.state;
-      H = state.length; W = state[0].length;
-      maze = state.map(row => row.map(v => v >= 4 ? LAND : v));
-      agentPos = ev.position;
-      draw();
+      const baseMaze = ev.state.map(row => row.map(v => v >= 5 ? LAND : v));
+      H = baseMaze.length; W = baseMaze[0].length;
+      pushFrame({ maze: baseMaze, pos: ev.position, memory: ev.memory });
+      const key = `${ev.position[0]},${ev.position[1]}`;
+      visitTrail.set(key, 1);
     } else if (ev.type === "step_delta") {
-      agentPos = ev.position;
-      draw();
+      const baseMaze = frames.length ? frames[frames.length - 1].maze : maze;
+      pushFrame({ maze: baseMaze, pos: ev.position, memory: ev.memory });
+      // fade existing visits
+      for (const k of visitTrail.keys()) visitTrail.set(k, visitTrail.get(k) * 0.97);
+      visitTrail.set(`${ev.position[0]},${ev.position[1]}`, 1);
     } else if (ev.type === "episode") {
-      rewardChart.data.labels.push(ev.episode);
-      rewardChart.data.datasets[0].data.push(ev.total_reward);
-      lengthChart.data.labels.push(ev.episode);
-      lengthChart.data.datasets[0].data.push(ev.length);
-      if (rewardChart.data.labels.length % 5 === 0) {
-        rewardChart.update("none");
-        lengthChart.update("none");
-      }
-      $("status").textContent = `ep ${ev.episode} R=${ev.total_reward.toFixed(2)} len=${ev.length}`;
+      pushChart(rewardChart, ev.episode, ev.total_reward);
+      pushChart(lengthChart, ev.episode, ev.length);
+      if (ev.loss != null) pushChart(lossChart, ev.episode, ev.loss);
+      pushChart(epsChart, ev.episode, ev.epsilon);
+      if (rewardChart.data.labels.length % 5 === 0) flushCharts();
+      $("status").textContent =
+        `ep ${ev.episode} R=${ev.total_reward.toFixed(2)} len=${ev.length}`;
     } else if (ev.type === "run" && ev.kind === "end") {
+      flushCharts();
       $("status").textContent = "done";
-      rewardChart.update("none");
-      lengthChart.update("none");
     }
   };
   es.onerror = () => { $("status").textContent = "stream closed"; };
 }
 
+// --- train --------------------------------------------------------------
 $("train").addEventListener("click", async () => {
   W = +$("w").value; H = +$("h").value;
-  // Re-sync size if changed.
-  if (maze.length !== H || maze[0].length !== W) maze = newMaze(W, H, +$("density").value);
+  if (maze.length !== H || maze[0].length !== W)
+    maze = newMaze(W, H, +$("density").value);
   $("status").textContent = "starting…";
-  rewardChart.data.labels = []; rewardChart.data.datasets[0].data = [];
-  lengthChart.data.labels = []; lengthChart.data.datasets[0].data = [];
-  rewardChart.update("none"); lengthChart.update("none");
-
+  resetCharts(); resetLive(); draw();
   startStream();
-  await fetch("/api/runs", {
+
+  const partial = $("partial").value === "" ? null : +$("partial").value;
+  const body = {
+    agent_type: $("agent").value,
+    width: W, height: H,
+    density: +$("density").value,
+    num_episodes: +$("episodes").value,
+    max_steps: +$("max_steps").value,
+    n_lava: +$("n_lava").value,
+    partial,
+    maze,
+  };
+  const r = await fetch("/api/runs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      agent_type: $("agent").value,
-      width: W, height: H,
-      density: +$("density").value,
-      num_episodes: +$("episodes").value,
-      max_steps: +$("max_steps").value,
-      maze,
-    }),
+    body: JSON.stringify(body),
   });
+  if (!r.ok) $("status").textContent = "start failed";
 });
 
-// initial render
-$("regen").click();
+// init
 draw();

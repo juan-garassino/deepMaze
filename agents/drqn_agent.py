@@ -209,6 +209,15 @@ class DRQNAgent(BaseAgent):
             self.target_model.load_state_dict(self.model.state_dict())
 
     # ------------------------------------------------------------------
+    def memory_snapshot(self):
+        """Return a small float vector summarising current memory.
+        For DRQN: the LSTM hidden state h (clipped to ~32 dim for the strip viz)."""
+        if self._hidden is None:
+            return None
+        h = self._hidden[0]  # (num_layers, B=1, hidden)
+        flat = h.detach().cpu().numpy().reshape(-1)
+        return {"kind": "lstm_hidden", "data": flat[:64].tolist()}
+
     def q_values(self, state):
         x = self._obs_tensor(state)
         pa = torch.tensor([[NO_ACTION]], dtype=torch.long, device=self.device)

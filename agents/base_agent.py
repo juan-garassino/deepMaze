@@ -40,5 +40,10 @@ class BaseAgent(ABC):
     def policy_snapshot(self):
         return None
 
+    def memory_snapshot(self):
+        """Snapshot of the agent's current internal memory for live viz.
+        Returns None unless the agent has a useful memory (DRQN/DTQN)."""
+        return None
+
     def add_training_reward(self, reward):
         self.training_rewards.append(reward)

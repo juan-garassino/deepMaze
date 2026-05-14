@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>deepMaze memory</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app">
+  <header class="topbar">
+    <h1>deepMaze</h1>
+    <nav>
+      <a href="/">Train</a>
+      <a href="/runs">Runs</a>
+      <a href="/memory" class="active">Memory</a>
+    </nav>
+    <span class="status" id="status">waiting for memory events…</span>
+  </header>
+  <main class="memory-page">
+    <h2 id="title" style="margin-top:0; color: var(--fg);">Memory over time</h2>
+    <canvas id="memoryFull" width="960" height="320"></canvas>
+    <div class="legend-row">
+      Rows: timesteps (newest at bottom). Columns: hidden units (LSTM) or
+      past-step attention weights (DTQN). Blue = positive / high; red = negative.
+    </div>
+  </main>
+
+  <script>
+    /* Subscribes to SSE; for each step that carries a `memory` payload,
+       appends one row to a heatmap. */
+    const cv = document.getElementById("memoryFull");
+    const cx = cv.getContext("2d");
+    const W = cv.width, H = cv.height;
+    cx.fillStyle = "#1c232c"; cx.fillRect(0, 0, W, H);
+
+    let rows = [];                  // array of arrays
+    const MAX_ROWS = 200;
+    let kind = null;
+
+    function draw() {
+      cx.fillStyle = "#1c232c"; cx.fillRect(0, 0, W, H);
+      if (!rows.length) return;
+      const rh = H / Math.min(MAX_ROWS, rows.length);
+      const D = Math.max(...rows.map(r => r.length));
+      const cw = W / D;
+      let mx = 0;
+      for (const r of rows) for (const v of r) mx = Math.max(mx, Math.abs(v));
+      mx = mx || 1;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        for (let j = 0; j < row.length; j++) {
+          const v = row[j] / mx;
+          if (kind === "attention_row") {
+            const a = Math.max(0, Math.min(1, v));
+            cx.fillStyle = `rgba(78, 168, 255, ${a})`;
+          } else {
+            const a = Math.min(1, Math.abs(v));
+            cx.fillStyle = v >= 0
+              ? `rgba(78, 168, 255, ${a})`
+              : `rgba(226, 85, 85, ${a})`;
+          }
+          cx.fillRect(j * cw, i * rh, cw + 1, rh + 1);
+        }
+      }
+    }
+
+    const es = new EventSource("/api/events");
+    es.onmessage = (msg) => {
+      const ev = JSON.parse(msg.data);
+      if ((ev.type === "step" || ev.type === "step_delta") && ev.memory) {
+        if (kind !== ev.memory.kind) {
+          kind = ev.memory.kind;
+          document.getElementById("title").textContent =
+            kind === "lstm_hidden" ? "LSTM hidden state over time"
+                                   : "Attention to past steps over time";
+        }
+        rows.push(ev.memory.data);
+        if (rows.length > MAX_ROWS) rows = rows.slice(-MAX_ROWS);
+        document.getElementById("status").textContent = `${rows.length} timesteps`;
+        draw();
+      }
+      if (ev.type === "run" && ev.kind === "end") {
+        document.getElementById("status").textContent += " — episode ended";
+      }
+    };
+  </script>
+</body>
+</html>

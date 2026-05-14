@@ -66,12 +66,14 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
             total += float(reward)
             length += 1
             if emit:
+                mem = agent.memory_snapshot() if hasattr(agent, "memory_snapshot") else None
                 bus.publish(StepEvent(
                     episode=episode, step=step,
                     state=np.asarray(next_state),
                     position=env.agent_positions[0],
                     action=int(action), reward=float(reward), done=bool(done),
                     q_values=qv,
+                    memory=mem,
                 ))
             state = next_state
             if done:
