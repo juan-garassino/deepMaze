@@ -104,18 +104,14 @@ function startStream() {
   es.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
     if (ev.type === "step") {
-      // server sends full state; re-render the maze view.
+      // Full payload at episode start: rebuild maze + place agent.
       const state = ev.state;
-      // copy underlying tiles, mark agent.
-      for (let i = 0; i < H; i++)
-        for (let j = 0; j < W; j++)
-          if (state[i] && state[i][j] !== undefined && state[i][j] >= 4) {
-            agentPos = [i, j];
-          }
-      // refresh tiles from server state in case maze was server-generated.
-      for (let i = 0; i < state.length; i++)
-        for (let j = 0; j < state[i].length; j++)
-          maze[i][j] = state[i][j] >= 4 ? LAND : state[i][j];
+      H = state.length; W = state[0].length;
+      maze = state.map(row => row.map(v => v >= 4 ? LAND : v));
+      agentPos = ev.position;
+      draw();
+    } else if (ev.type === "step_delta") {
+      agentPos = ev.position;
       draw();
     } else if (ev.type === "episode") {
       rewardChart.data.labels.push(ev.episode);

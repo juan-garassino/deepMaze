@@ -8,10 +8,15 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, List, Sequence, Tuple
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
+
+
+def _plt():
+    """Lazy import — matplotlib is ~3s to import, dominates nano runs."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    return plt
 
 
 # --------------------------------------------------------------------------
@@ -29,6 +34,7 @@ def _ema(xs: Sequence[float], alpha: float = 0.1) -> List[float]:
 
 
 def plot_training_curves(episodes: List[Any], out_path: str) -> str:
+    plt = _plt()
     if not episodes:
         fig, ax = plt.subplots(figsize=(6, 3))
         ax.text(0.5, 0.5, "no episode data", ha="center", va="center")
@@ -79,6 +85,7 @@ def plot_training_curves(episodes: List[Any], out_path: str) -> str:
 
 
 def plot_policy_heatmap(q_source, env, out_path: str) -> str:
+    plt = _plt()
     """
     q_source can be:
       - a dict mapping flattened-state tuples -> action ndarray (tabular)
@@ -104,16 +111,21 @@ def plot_policy_heatmap(q_source, env, out_path: str) -> str:
                     qv = q_source[key]
                     V[i, j] = float(np.max(qv))
                     A[i, j] = int(np.argmax(qv))
-    elif callable(q_source):
-        for i in range(h):
-            for j in range(w):
-                if env.maze[i, j] == 0:
-                    continue
-                obs = env.maze.copy()
-                obs[i, j] = 4
-                qv = q_source(obs)
-                V[i, j] = float(np.max(qv))
-                A[i, j] = int(np.argmax(qv))
+    elif callable(q_source) or hasattr(q_source, "q_values_batch"):
+        # Build one observation per non-wall cell, batch through the agent.
+        cells = [(i, j) for i in range(h) for j in range(w)
+                 if env.maze[i, j] != 0]
+        obs_batch = np.stack([
+            (lambda o: (o.__setitem__((i, j), 4) or o))(env.maze.copy())
+            for (i, j) in cells
+        ])
+        if hasattr(q_source, "q_values_batch"):
+            qs = q_source.q_values_batch(obs_batch)
+        else:
+            qs = np.stack([q_source(o) for o in obs_batch])
+        for (i, j), qv in zip(cells, qs):
+            V[i, j] = float(np.max(qv))
+            A[i, j] = int(np.argmax(qv))
 
     fig, ax = plt.subplots(figsize=(0.5 * w + 2, 0.5 * h + 2))
     im = ax.imshow(V, cmap="viridis")
@@ -157,6 +169,7 @@ def plot_policy_heatmap(q_source, env, out_path: str) -> str:
 
 
 def plot_visitation(trajectories: List[List[Tuple[int, int]]], env, out_path: str) -> str:
+    plt = _plt()
     h, w = env.height, env.width
     counts = np.zeros((h, w))
     for traj in trajectories:
@@ -185,6 +198,7 @@ def plot_visitation(trajectories: List[List[Tuple[int, int]]], env, out_path: st
 
 
 def plot_reward_landscape(env, out_path: str) -> str:
+    plt = _plt()
     h, w = env.height, env.width
     img = np.full((h, w, 3), 200, dtype=np.uint8)
     img[env.maze == 0] = (30, 30, 30)

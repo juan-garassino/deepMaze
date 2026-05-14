@@ -27,11 +27,27 @@ class StepEvent:
     q_values: Optional[np.ndarray] = None
 
     def to_json(self) -> dict:
+        """Backwards-compat: full payload. Prefer to_json_delta for live SSE."""
+        return self.to_json_full()
+
+    def to_json_full(self) -> dict:
         return {
             "type": "step",
             "episode": self.episode,
             "step": self.step,
             "state": self.state.tolist(),
+            "position": list(self.position),
+            "action": int(self.action),
+            "reward": float(self.reward),
+            "done": bool(self.done),
+            "q_values": None if self.q_values is None else self.q_values.tolist(),
+        }
+
+    def to_json_delta(self) -> dict:
+        return {
+            "type": "step_delta",
+            "episode": self.episode,
+            "step": self.step,
             "position": list(self.position),
             "action": int(self.action),
             "reward": float(self.reward),

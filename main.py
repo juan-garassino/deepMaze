@@ -119,7 +119,7 @@ def run(args):
     mgr.save_curves(metrics.episodes)
     mgr.save_visitation(traj.trajectories, env)
 
-    q_source = agent.q_values if not hasattr(agent, "Q") else dict(agent.Q)
+    q_source = dict(agent.Q) if hasattr(agent, "Q") else agent
     try:
         mgr.save_policy_heatmap(q_source, env)
     except Exception as e:

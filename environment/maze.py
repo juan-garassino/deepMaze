@@ -337,15 +337,44 @@ class RenderMaze:
         if not self.frames:
             return []
         keep_idx = self._frame_indices(frame_skip, max_frames)
+
+        # If the underlying maze never changes across kept frames, we render
+        # the static base once and only redraw the agent sprite per frame.
+        bases = [self.frames[i][0] for i in keep_idx]
+        first = bases[0]
+        static = all(b.shape == first.shape and (b == first).all() for b in bases)
+
+        base_rgba = None
+        if static:
+            base_rgba = self._tile(first, sprite_size)  # no agents
+
         out = []
-        for k, idx in enumerate(keep_idx):
+        for idx in keep_idx:
             maze, pos, q = self.frames[idx]
-            m = maze.copy()
             positions = pos if isinstance(pos, list) else [pos]
-            for ai, p in enumerate(positions):
-                if p is not None:
-                    m[p] = 4 + ai
-            img = self._tile(m, sprite_size).convert("RGB")
+            if static and base_rgba is not None:
+                img = base_rgba.copy()
+                for ai, p in enumerate(positions):
+                    if p is None:
+                        continue
+                    sp = self.sprites[SPRITE_AGENT]
+                    if sp.size != (sprite_size, sprite_size):
+                        sp = sp.resize((sprite_size, sprite_size), Image.LANCZOS)
+                    img.paste(sp.convert("RGBA"),
+                              (p[1] * sprite_size, p[0] * sprite_size))
+                    tint = _AGENT_TINTS[(ai) % len(_AGENT_TINTS)]
+                    if tint is not None:
+                        overlay = Image.new("RGBA", (sprite_size, sprite_size),
+                                            tint + (90,))
+                        img.alpha_composite(overlay,
+                                            (p[1] * sprite_size, p[0] * sprite_size))
+                img = img.convert("RGB")
+            else:
+                m = maze.copy()
+                for ai, p in enumerate(positions):
+                    if p is not None:
+                        m[p] = 4 + ai
+                img = self._tile(m, sprite_size).convert("RGB")
             if q is not None:
                 self._overlay_q(img, q, sprite_size, step=idx)
             out.append(img)
