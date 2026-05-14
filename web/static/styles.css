@@ -1,0 +1,15 @@
+* { box-sizing: border-box; }
+body { font-family: ui-monospace, Menlo, monospace; background: #111; color: #eee; margin: 0; }
+header { padding: 12px 18px; border-bottom: 1px solid #333; }
+header h1 { margin: 0 0 8px; font-size: 18px; letter-spacing: 0.06em; }
+.controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.controls input, .controls select { background: #222; color: #eee; border: 1px solid #444; padding: 3px 6px; width: 70px; }
+.controls button { background: #2a5d8f; color: white; border: none; padding: 5px 12px; cursor: pointer; }
+.controls button:hover { background: #3a7db0; }
+#status { margin-left: auto; color: #9c9; }
+main { display: grid; grid-template-columns: auto 1fr; gap: 18px; padding: 18px; }
+.board { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+canvas#maze { background: #000; image-rendering: pixelated; cursor: crosshair; border: 1px solid #333; }
+.legend { font-size: 11px; color: #888; }
+.charts { display: flex; flex-direction: column; gap: 12px; }
+.charts canvas { background: #1a1a1a; border: 1px solid #333; max-height: 240px; }
