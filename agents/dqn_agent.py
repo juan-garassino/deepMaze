@@ -5,25 +5,15 @@ import torch.optim as optim
 
 from base_agent import BaseAgent
 from replay_buffer import ReplayBuffer
-
-
-class DQN(nn.Module):
-    def __init__(self, input_size, output_size):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_size, 64), nn.ReLU(),
-            nn.Linear(64, 64), nn.ReLU(),
-            nn.Linear(64, output_size),
-        )
-
-    def forward(self, x):
-        return self.net(x)
+from nets import CNNHead, MLPHead
 
 
 class DQNAgent(BaseAgent):
-    def __init__(self, state_size, action_size, learning_rate=1e-3, discount_factor=0.99,
-                 exploration_rate=1.0, exploration_decay=0.995, min_epsilon=0.01,
-                 batch_size=64, target_sync=200, buffer_capacity=10000):
+    def __init__(self, state_size, action_size, learning_rate=1e-3,
+                 discount_factor=0.99, exploration_rate=1.0,
+                 exploration_decay=0.995, min_epsilon=0.01,
+                 batch_size=64, target_sync=200, buffer_capacity=10000,
+                 net: str = "mlp", grid_shape=None):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.state_size = state_size
@@ -33,16 +23,29 @@ class DQNAgent(BaseAgent):
         self.min_epsilon = min_epsilon
         self.batch_size = batch_size
         self.target_sync = target_sync
+        self.net = net
         self._step = 0
 
-        self.model = DQN(state_size, action_size).to(self.device)
-        self.target_model = DQN(state_size, action_size).to(self.device)
+        if net == "cnn":
+            if grid_shape is None:
+                # square grid inferred from state_size
+                side = int(round(state_size ** 0.5))
+                if side * side != state_size:
+                    raise ValueError("CNN needs grid_shape=(h,w) for non-square obs")
+                grid_shape = (side, side)
+            self.h, self.w = grid_shape
+            self.model = CNNHead(self.h, self.w, action_size).to(self.device)
+            self.target_model = CNNHead(self.h, self.w, action_size).to(self.device)
+        else:
+            self.model = MLPHead(state_size, action_size).to(self.device)
+            self.target_model = MLPHead(state_size, action_size).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.memory = ReplayBuffer(buffer_capacity, state_size, 1)
 
     def _to_tensor(self, state):
-        return torch.from_numpy(np.asarray(state, dtype=np.float32).flatten()).unsqueeze(0).to(self.device)
+        return torch.from_numpy(np.asarray(state, dtype=np.float32).flatten()
+                                ).unsqueeze(0).to(self.device)
 
     def move(self, state):
         if np.random.random() < self.epsilon:
@@ -54,7 +57,6 @@ class DQNAgent(BaseAgent):
     def update(self, state, action, reward, next_state, done):
         self.memory.push(state, action, reward, next_state, done)
         self._step += 1
-
         if len(self.memory) >= self.batch_size:
             batch = self.memory.sample(self.batch_size)
             s = torch.from_numpy(batch['state']).to(self.device)

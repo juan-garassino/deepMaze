@@ -153,6 +153,37 @@ def create_app(bus: Optional[EventBus] = None, manager=None) -> FastAPI:
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
 
+    @app.get("/api/runs/list")
+    def list_runs():
+        """Enumerate persisted runs from maze_rl_runs/, newest first."""
+        base = os.path.join(os.getcwd(), "maze_rl_runs")
+        if not os.path.isdir(base):
+            return {"runs": []}
+        items = []
+        for name in sorted(os.listdir(base), reverse=True):
+            run_dir = os.path.join(base, name)
+            if not os.path.isdir(run_dir):
+                continue
+            results_path = os.path.join(run_dir, "results.json")
+            summary = {}
+            if os.path.exists(results_path):
+                try:
+                    summary = json.loads(open(results_path).read())
+                except Exception:
+                    pass
+            viz = os.path.join(run_dir, "viz")
+            artifacts = (sorted(os.listdir(viz)) if os.path.isdir(viz) else [])
+            items.append({"name": name, "summary": summary,
+                          "artifacts": artifacts})
+        return {"runs": items}
+
+    @app.get("/api/runs/{name}/file/{artifact}")
+    def run_file(name: str, artifact: str):
+        f = os.path.join(os.getcwd(), "maze_rl_runs", name, "viz", artifact)
+        if not os.path.exists(f):
+            raise HTTPException(404, f)
+        return FileResponse(f)
+
     @app.get("/api/artifacts")
     def artifacts():
         if app.state.manager is None:

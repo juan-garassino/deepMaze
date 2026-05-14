@@ -116,6 +116,29 @@ class MazeManager:
         self.log(f"Curves saved to {out}")
         return out
 
+    def save_rollout(self, agent, env, max_rollout: int = 30) -> Path:
+        from visualizations import plot_behavioral_rollout
+        out = self.viz_dir() / "rollout.png"
+        plot_behavioral_rollout(agent, env, str(out), max_rollout=max_rollout)
+        self.log(f"Rollout viz saved to {out}")
+        return out
+
+    def save_best_model(self, agent, eval_reward: float) -> bool:
+        """Persist agent as model.best.* if eval_reward improves the running best.
+        Returns True if persisted."""
+        best_file = self.run_dir / "best_eval.json"
+        prev = float("-inf")
+        if best_file.exists():
+            try:
+                prev = float(json.loads(best_file.read_text())["eval_reward"])
+            except Exception:
+                pass
+        if eval_reward <= prev:
+            return False
+        self.save_model(agent, filename="model.best")
+        best_file.write_text(json.dumps({"eval_reward": eval_reward}))
+        return True
+
     def save_policy_heatmap(self, q_source, env) -> Path:
         from visualizations import plot_policy_heatmap
         out = self.viz_dir() / "policy.png"

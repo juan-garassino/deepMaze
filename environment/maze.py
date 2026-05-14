@@ -19,7 +19,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 
-HOLE, LAND, START, EXIT = 0, 1, 2, 3
+HOLE, LAND, START, EXIT, LAVA = 0, 1, 2, 3, 4
+AGENT_BASE = 5  # agents are encoded as AGENT_BASE + agent_index
 SPRITE_HOLE, SPRITE_LAND, SPRITE_LAVA, SPRITE_EXIT, SPRITE_AGENT = 0, 1, 2, 3, 4
 
 # Per-agent tints for multi-agent renders; index 0 = no tint.
@@ -31,7 +32,9 @@ class MazeEnvironment:
 
     def __init__(self, width: int = 10, height: int = 10, n_agents: int = 1,
                  density: float = 0.2, seed: Optional[int] = None,
-                 generator: str = "random", ensure_solvable: bool = True):
+                 generator: str = "random", ensure_solvable: bool = True,
+                 n_lava: int = 0, lava_reward: float = -1.0,
+                 partial_view: Optional[int] = None):
         if width < 5 or height < 5:
             raise ValueError("Maze must be at least 5x5")
         self.width = int(width)
@@ -40,6 +43,9 @@ class MazeEnvironment:
         self.n_agents = int(n_agents)
         self.generator = generator
         self.ensure_solvable = bool(ensure_solvable)
+        self.n_lava = int(n_lava)
+        self.lava_reward = float(lava_reward)
+        self.partial_view = None if partial_view is None else int(partial_view)
         self._rng = np.random.default_rng(seed)
         self.action_size = 4
 
@@ -51,6 +57,8 @@ class MazeEnvironment:
         # markers may have been overwritten by carving — re-set
         self.maze[self.start_pos] = START
         self.maze[self.treasure_pos] = EXIT
+        if self.n_lava > 0:
+            self._place_lava(self.n_lava)
         self.agent_positions: List[Tuple[int, int]] = []
         self.reset()
 
@@ -178,6 +186,36 @@ class MazeEnvironment:
     def is_solvable(self) -> bool:
         return self._connected(self.start_pos, self.treasure_pos)
 
+    # ------------------------------------------------------------------
+    # lava placement
+    # ------------------------------------------------------------------
+    def _place_lava(self, n: int) -> None:
+        """Drop n lava cells on LAND cells that are not on the start->goal
+        shortest path. Guarantees the maze stays solvable."""
+        import collections
+        h, w = self.height, self.width
+        # BFS shortest path src -> dst (in number of cells)
+        prev = {self.start_pos: None}
+        q = collections.deque([self.start_pos])
+        while q:
+            r, c = q.popleft()
+            if (r, c) == self.treasure_pos:
+                break
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < h and 0 <= nc < w and (nr, nc) not in prev
+                        and self.maze[nr, nc] != HOLE):
+                    prev[(nr, nc)] = (r, c); q.append((nr, nc))
+        path = set()
+        cur = self.treasure_pos
+        while cur is not None:
+            path.add(cur); cur = prev.get(cur)
+        candidates = [(i, j) for i in range(1, h - 1) for j in range(1, w - 1)
+                      if self.maze[i, j] == LAND and (i, j) not in path]
+        self._rng.shuffle(candidates)
+        for (i, j) in candidates[:n]:
+            self.maze[i, j] = LAVA
+
     def _find_empty_cell(self, taken: Sequence[Tuple[int, int]]) -> Tuple[int, int]:
         candidates = [(i, j) for i in range(1, self.height - 1)
                       for j in range(1, self.width - 1)
@@ -203,10 +241,26 @@ class MazeEnvironment:
         return self.get_observation()
 
     def get_observation(self) -> np.ndarray:
-        obs = self.maze.copy()
+        """Full or partial (egocentric window) observation.
+
+        Partial: returns a (2K+1)x(2K+1) crop centered on agent 0; cells
+        outside the maze are HOLE. The agent's marker is always at center.
+        """
+        full = self.maze.copy()
         for i, pos in enumerate(self.agent_positions):
-            obs[pos] = 4 + i
-        return obs
+            full[pos] = AGENT_BASE + i
+        if self.partial_view is None:
+            return full
+        K = self.partial_view
+        size = 2 * K + 1
+        out = np.full((size, size), HOLE, dtype=full.dtype)
+        r, c = self.agent_positions[0]
+        for di in range(-K, K + 1):
+            for dj in range(-K, K + 1):
+                rr, cc = r + di, c + dj
+                if 0 <= rr < self.height and 0 <= cc < self.width:
+                    out[di + K, dj + K] = full[rr, cc]
+        return out
 
     def step(self, actions: Union[int, Sequence[int]]):
         if self.n_agents == 1 and isinstance(actions, (int, np.integer)):
@@ -224,13 +278,16 @@ class MazeEnvironment:
             elif action == 3: nc = max(0, c - 1)
 
             target = (nr, nc)
-            blocked = self.maze[target] == HOLE or target in self.agent_positions
+            cell = self.maze[target]
+            blocked = cell == HOLE or target in self.agent_positions
             if blocked:
                 target = (r, c)
                 reward = -0.1
                 done = False
             elif target == self.treasure_pos:
                 reward, done = 1.0, True
+            elif cell == LAVA:
+                reward, done = self.lava_reward, True
             else:
                 reward, done = -0.01, False
 
@@ -297,16 +354,17 @@ class RenderMaze:
         for i in range(h):
             for j in range(w):
                 v = int(maze[i, j])
-                if v >= 4:        idx = SPRITE_AGENT
-                elif v == HOLE:   idx = SPRITE_HOLE
-                elif v == EXIT:   idx = SPRITE_EXIT
-                else:             idx = SPRITE_LAND
+                if v >= AGENT_BASE: idx = SPRITE_AGENT
+                elif v == HOLE:     idx = SPRITE_HOLE
+                elif v == EXIT:     idx = SPRITE_EXIT
+                elif v == LAVA:     idx = SPRITE_LAVA
+                else:               idx = SPRITE_LAND
                 sp = self.sprites[idx]
                 if sp.size != (sprite_size, sprite_size):
                     sp = sp.resize((sprite_size, sprite_size), Image.LANCZOS)
                 canvas.paste(sp.convert("RGBA"), (j * sprite_size, i * sprite_size))
-                if v >= 4:
-                    tint = _AGENT_TINTS[(v - 4) % len(_AGENT_TINTS)]
+                if v >= AGENT_BASE:
+                    tint = _AGENT_TINTS[(v - AGENT_BASE) % len(_AGENT_TINTS)]
                     if tint is not None:
                         overlay = Image.new("RGBA", (sprite_size, sprite_size),
                                             tint + (90,))
@@ -373,7 +431,7 @@ class RenderMaze:
                 m = maze.copy()
                 for ai, p in enumerate(positions):
                     if p is not None:
-                        m[p] = 4 + ai
+                        m[p] = AGENT_BASE + ai
                 img = self._tile(m, sprite_size).convert("RGB")
             if q is not None:
                 self._overlay_q(img, q, sprite_size, step=idx)

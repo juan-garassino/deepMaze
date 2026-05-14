@@ -29,6 +29,7 @@ class DQNHP:
     batch_size: int = 64
     target_sync: int = 200
     buffer_capacity: int = 10000
+    net: str = "mlp"
 
 
 @dataclass(frozen=True)
@@ -42,9 +43,25 @@ class PPOHP:
     epochs: int = 4
     minibatches: int = 4
     gae_lambda: float = 0.95
+    net: str = "mlp"
 
 
-DEFAULTS = {"q": QHP(), "dqn": DQNHP(), "ppo": PPOHP()}
+@dataclass(frozen=True)
+class DRQNHP:
+    learning_rate: float = 1e-3
+    discount_factor: float = 0.99
+    exploration_rate: float = 1.0
+    exploration_decay: float = 0.995
+    min_epsilon: float = 0.05
+    batch_size: int = 8
+    seq_len: int = 8
+    burn_in: int = 4
+    target_sync: int = 100
+    buffer_capacity: int = 200
+    lstm_hidden: int = 128
+
+
+DEFAULTS = {"q": QHP(), "dqn": DQNHP(), "ppo": PPOHP(), "drqn": DRQNHP()}
 
 
 def defaults_for(agent_type: str) -> dict:

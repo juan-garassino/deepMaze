@@ -10,21 +10,30 @@ from maze import MazeEnvironment
 from q_agent import QAgent
 from dqn_agent import DQNAgent
 from ppo_agent import PPOAgent
+from drqn_agent import DRQNAgent
 from viz_events import EventBus, EpisodeEvent, PolicyEvent, RunEvent, StepEvent
 
 
 def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
     from hyperparameters import defaults_for
-    state_size = env.height * env.width
+    obs_shape = env.get_observation().shape  # (h, w)
+    state_size = int(np.prod(obs_shape))
     action_size = env.action_size
-    # caller kwargs override defaults; both override agent __init__ signatures
+    grid_shape = obs_shape if len(obs_shape) == 2 else None
     hp = {**defaults_for(agent_type), **{k: v for k, v in kwargs.items() if v is not None}}
     if agent_type == "q":
         return QAgent(action_size=action_size, **hp)
     if agent_type == "dqn":
+        if hp.get("net") == "cnn":
+            hp["grid_shape"] = grid_shape
         return DQNAgent(state_size=state_size, action_size=action_size, **hp)
     if agent_type == "ppo":
+        if hp.get("net") == "cnn":
+            hp["grid_shape"] = grid_shape
         return PPOAgent(state_size=state_size, action_size=action_size, **hp)
+    if agent_type == "drqn":
+        return DRQNAgent(state_size=state_size, action_size=action_size,
+                         grid_shape=grid_shape, **hp)
     raise ValueError(f"Unknown agent type: {agent_type}")
 
 
@@ -32,7 +41,8 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                 bus: Optional[EventBus] = None,
                 policy_snapshot_every: int = 50,
                 emit_steps: bool = True,
-                emit_q_values: bool = False):
+                emit_q_values: bool = False,
+                random_start: bool = True):
     if bus is not None:
         bus.publish(RunEvent(kind="start",
                              info={"num_episodes": num_episodes,
@@ -40,7 +50,9 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                                    "agent": type(agent).__name__}))
 
     for episode in range(num_episodes):
-        state = env.reset()
+        state = env.reset(at_start=not random_start)
+        if hasattr(agent, "on_episode_start"):
+            agent.on_episode_start()
         total = 0.0
         length = 0
         success = False
@@ -87,6 +99,8 @@ def simulate_episode(env: MazeEnvironment, agent, max_steps: int,
                      at_start: bool = False
                      ) -> Tuple[List[np.ndarray], List[Tuple[int, int]], List[int], float]:
     state = env.reset(at_start=at_start) if at_start else env.reset()
+    if hasattr(agent, "on_episode_start"):
+        agent.on_episode_start()
     states = [state.copy()]
     positions: List[Tuple[int, int]] = [env.agent_positions[0]]
     actions: List[int] = []

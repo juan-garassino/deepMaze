@@ -5,19 +5,7 @@ import torch.optim as optim
 from torch.distributions import Categorical
 
 from base_agent import BaseAgent
-
-
-class ActorCritic(nn.Module):
-    def __init__(self, input_size, output_size):
-        super().__init__()
-        self.shared = nn.Sequential(nn.Linear(input_size, 64), nn.Tanh(),
-                                    nn.Linear(64, 64), nn.Tanh())
-        self.actor = nn.Linear(64, output_size)
-        self.critic = nn.Linear(64, 1)
-
-    def forward(self, x):
-        h = self.shared(x)
-        return torch.softmax(self.actor(h), dim=-1), self.critic(h)
+from nets import MLPActorCritic, CNNActorCritic
 
 
 class PPOAgent(BaseAgent):
@@ -31,7 +19,7 @@ class PPOAgent(BaseAgent):
     def __init__(self, state_size, action_size, learning_rate=3e-4,
                  discount_factor=0.99, clip_eps=0.2, value_coef=0.5,
                  entropy_coef=0.01, n_steps=256, epochs=4, minibatches=4,
-                 gae_lambda=0.95):
+                 gae_lambda=0.95, net: str = "mlp", grid_shape=None):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.state_size = state_size
@@ -43,9 +31,19 @@ class PPOAgent(BaseAgent):
         self.epochs = int(epochs)
         self.minibatches = int(minibatches)
         self.gae_lambda = gae_lambda
+        self.net = net
         self.epsilon = 0.0  # log-only; PPO is on-policy stochastic
 
-        self.ac = ActorCritic(state_size, action_size).to(self.device)
+        if net == "cnn":
+            if grid_shape is None:
+                side = int(round(state_size ** 0.5))
+                if side * side != state_size:
+                    raise ValueError("CNN needs grid_shape=(h,w) for non-square obs")
+                grid_shape = (side, side)
+            self.ac = CNNActorCritic(grid_shape[0], grid_shape[1],
+                                     action_size).to(self.device)
+        else:
+            self.ac = MLPActorCritic(state_size, action_size).to(self.device)
         self.optimizer = optim.Adam(self.ac.parameters(), lr=learning_rate)
         self._buf = []
         self._last_logprob = 0.0

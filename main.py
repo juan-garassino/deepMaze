@@ -26,13 +26,20 @@ from seeding import seed_everything             # noqa: E402
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="deepMaze — RL maze playground")
-    p.add_argument("--agent_type", choices=["q", "dqn", "ppo"], default="q")
+    p.add_argument("--agent_type", choices=["q", "dqn", "ppo", "drqn"], default="q")
+    p.add_argument("--net", choices=["mlp", "cnn"], default=None,
+                   help="Network backbone for DQN/PPO; overrides hyperparam default.")
     p.add_argument("--maze_width", type=int, default=10)
     p.add_argument("--maze_height", type=int, default=10)
     p.add_argument("--n_agents", type=int, default=1)
     p.add_argument("--density", type=float, default=0.2)
     p.add_argument("--generator", choices=["random", "dfs", "open"], default="random")
     p.add_argument("--no_ensure_solvable", action="store_true")
+    p.add_argument("--n_lava", type=int, default=0,
+                   help="Number of LAVA cells (terminal -1) off the shortest path.")
+    p.add_argument("--lava_reward", type=float, default=-1.0)
+    p.add_argument("--partial", type=int, default=None,
+                   help="Egocentric (2K+1)x(2K+1) window; default full-view.")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--num_episodes", type=int, default=500)
     p.add_argument("--max_steps", type=int, default=200)
@@ -52,7 +59,29 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--live_web", action="store_true", help="Start web viewer thread")
     p.add_argument("--web_port", type=int, default=8000)
     p.add_argument("--run_id", type=str, default=None)
+    p.add_argument("--run_name", type=str, default=None,
+                   help="Custom run dir suffix (overrides timestamp).")
+    p.add_argument("--random_start", action="store_true",
+                   help="Sample agent's reset position each episode (default: Start).")
+    p.add_argument("--resume", type=str, default=None,
+                   help="Path to a saved model.{pt,pkl} to load before training.")
+    p.add_argument("--eval_maze", choices=["same", "fresh"], default="same")
+    p.add_argument("--eval_seeds", type=int, default=1,
+                   help="Held-out eval averages over this many fresh mazes.")
     return p
+
+
+def _resume_agent(agent, path: str, mgr) -> None:
+    """Load saved state into a freshly-created agent."""
+    import pickle
+    import torch
+    if path.endswith(".pkl"):
+        with open(path, "rb") as f:
+            agent.Q.update(pickle.load(f))
+    else:
+        module = getattr(agent, "model", None) or getattr(agent, "ac", None)
+        module.load_state_dict(torch.load(path, map_location=getattr(agent, "device", "cpu")))
+    mgr.log(f"Resumed agent state from {path}")
 
 
 def _load_sprites(args) -> list:
@@ -67,18 +96,24 @@ def _load_sprites(args) -> list:
 
 def run(args):
     seed_everything(args.seed)
-    mgr = MazeManager(run_id=args.run_id)
+    mgr = MazeManager(run_id=args.run_name or args.run_id)
     mgr.save_config(vars(args))
 
     env = MazeEnvironment(width=args.maze_width, height=args.maze_height,
                           n_agents=args.n_agents, density=args.density,
                           seed=args.seed, generator=args.generator,
-                          ensure_solvable=not args.no_ensure_solvable)
+                          ensure_solvable=not args.no_ensure_solvable,
+                          n_lava=args.n_lava, lava_reward=args.lava_reward,
+                          partial_view=args.partial)
     mgr.log(f"Maze: gen={args.generator} solvable={env.is_solvable()}")
     agent_kw = {"discount_factor": args.discount_factor}
     if args.learning_rate is not None:
         agent_kw["learning_rate"] = args.learning_rate
+    if args.net is not None:
+        agent_kw["net"] = args.net
     agent = create_agent(args.agent_type, env, **agent_kw)
+    if args.resume:
+        _resume_agent(agent, args.resume, mgr)
     mgr.log(f"Agent: {type(agent).__name__}; "
             f"maze: {args.maze_height}x{args.maze_width}; "
             f"episodes: {args.num_episodes}")
@@ -103,19 +138,42 @@ def run(args):
                 max_steps=args.max_steps,
                 bus=bus,
                 policy_snapshot_every=args.policy_snapshot_every,
-                emit_steps=True)
+                emit_steps=True,
+                random_start=args.random_start)
 
     mgr.log("Evaluating...")
     avg_r, avg_l, success = evaluate_agent(env, agent,
                                            num_episodes=args.eval_episodes,
                                            max_steps=args.max_steps)
-    mgr.save_results({"avg_reward": avg_r, "avg_length": avg_l,
-                      "success_rate": success,
-                      "episodes_trained": args.num_episodes})
+    results = {"avg_reward": avg_r, "avg_length": avg_l,
+               "success_rate": success,
+               "episodes_trained": args.num_episodes}
     mgr.log(f"Eval: avg_reward={avg_r:.3f}  avg_length={avg_l:.1f}  "
             f"success={success*100:.1f}%")
 
+    if args.eval_maze == "fresh" and args.eval_seeds > 0:
+        held_out = []
+        for k in range(args.eval_seeds):
+            seed_k = (args.seed or 0) + 1 + k
+            env_k = MazeEnvironment(width=args.maze_width, height=args.maze_height,
+                                    n_agents=args.n_agents, density=args.density,
+                                    seed=seed_k, generator=args.generator,
+                                    ensure_solvable=not args.no_ensure_solvable,
+                                    n_lava=args.n_lava, lava_reward=args.lava_reward,
+                                    partial_view=args.partial)
+            r_k, l_k, s_k = evaluate_agent(env_k, agent,
+                                           num_episodes=args.eval_episodes,
+                                           max_steps=args.max_steps)
+            held_out.append({"seed": seed_k, "avg_reward": r_k,
+                             "avg_length": l_k, "success_rate": s_k})
+        results["held_out_eval"] = held_out
+        ho_mean = sum(h["success_rate"] for h in held_out) / len(held_out)
+        mgr.log(f"Held-out success (n={args.eval_seeds}): {ho_mean*100:.1f}%")
+
+    mgr.save_results(results)
     mgr.save_model(agent)
+    if mgr.save_best_model(agent, avg_r):
+        mgr.log("Saved as best-eval checkpoint.")
     mgr.save_curves(metrics.episodes)
     mgr.save_visitation(traj.trajectories, env)
 
@@ -124,6 +182,11 @@ def run(args):
         mgr.save_policy_heatmap(q_source, env)
     except Exception as e:
         mgr.log(f"Policy heatmap skipped: {e}", "warning")
+
+    try:
+        mgr.save_rollout(agent, env)
+    except Exception as e:
+        mgr.log(f"Rollout viz skipped: {e}", "warning")
 
     # Replay WebP from one greedy episode starting at the canonical Start cell.
     agent.set_deterministic(True)
