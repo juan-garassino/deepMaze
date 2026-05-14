@@ -1,0 +1,9 @@
+numpy>=1.24
+Pillow>=10.0
+matplotlib>=3.7
+torch>=2.0
+fastapi>=0.110
+uvicorn[standard]>=0.27
+sse-starlette>=2.0
+imageio[ffmpeg]>=2.34
+pytest>=8.0
