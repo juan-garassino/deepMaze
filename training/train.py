@@ -43,7 +43,8 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                 policy_snapshot_every: int = 50,
                 emit_steps: bool = True,
                 emit_q_values: bool = False,
-                random_start: bool = True):
+                random_start: bool = True,
+                should_stop=None):
     if bus is not None:
         bus.publish(RunEvent(kind="start",
                              info={"num_episodes": num_episodes,
@@ -51,6 +52,8 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                                    "agent": type(agent).__name__}))
 
     for episode in range(num_episodes):
+        if should_stop is not None and should_stop():
+            break
         state = env.reset(at_start=not random_start)
         if hasattr(agent, "on_episode_start"):
             agent.on_episode_start()

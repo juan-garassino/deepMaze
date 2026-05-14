@@ -123,6 +123,9 @@ compose).
 For non-Docker dev `python web/server.py` still works — `config.js`
 detects the unsubstituted template and falls back to same-origin.
 
+> `CORS_ORIGINS=*` is the default for dev only. Set it to the explicit
+> frontend origin (e.g. `https://maze.example.com`) for any real deploy.
+
 ## Run artifacts
 
 ```

@@ -139,13 +139,13 @@ def plot_policy_heatmap(q_source, env, out_path: str) -> str:
     walls[env.maze == 0] = [0, 0, 0, 1]
     ax.imshow(walls)
 
-    # Goal/start markers.
+    # Goal/start markers (multi-treasure aware).
     sr, sc = env.start_pos
-    tr, tc = env.treasure_pos
     ax.text(sc, sr, "S", ha="center", va="center",
             color="white", fontsize=12, fontweight="bold")
-    ax.text(tc, tr, "T", ha="center", va="center",
-            color="gold", fontsize=12, fontweight="bold")
+    for (tr, tc) in env.treasure_positions:
+        ax.text(tc, tr, "T", ha="center", va="center",
+                color="gold", fontsize=12, fontweight="bold")
 
     # Arrows for best action per cell.
     dyx = {0: (-0.35, 0), 1: (0, 0.35), 2: (0.35, 0), 3: (0, -0.35)}
@@ -184,9 +184,9 @@ def plot_visitation(trajectories: list[list[tuple[int, int]]], env, out_path: st
     im = ax.imshow(masked, cmap="magma")
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="log(1+visits)")
     sr, sc = env.start_pos
-    tr, tc = env.treasure_pos
     ax.text(sc, sr, "S", ha="center", va="center", color="white", fontweight="bold")
-    ax.text(tc, tr, "T", ha="center", va="center", color="gold", fontweight="bold")
+    for (tr, tc) in env.treasure_positions:
+        ax.text(tc, tr, "T", ha="center", va="center", color="gold", fontweight="bold")
     ax.set_title(f"Visitation ({len(trajectories)} eps)")
     ax.set_xticks([]); ax.set_yticks([])
     fig.tight_layout()
@@ -256,9 +256,10 @@ def plot_behavioral_rollout(agent, env, out_path: str,
             ax.arrow(j, i, dx, dy, head_width=0.22, head_length=0.22,
                      fc="white", ec="black", linewidth=0.6, length_includes_head=True)
 
-    sr, sc = env.start_pos; tr, tc = env.treasure_pos
+    sr, sc = env.start_pos
     ax.text(sc, sr, "S", ha="center", va="center", color="white", fontweight="bold")
-    ax.text(tc, tr, "T", ha="center", va="center", color="gold", fontweight="bold")
+    for (tr, tc) in env.treasure_positions:
+        ax.text(tc, tr, "T", ha="center", va="center", color="gold", fontweight="bold")
     # Mark lava cells
     for (i, j) in zip(*np.where(env.maze == LAVA)):
         ax.text(j, i, "X", ha="center", va="center", color="red", fontweight="bold")

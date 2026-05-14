@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>deepMaze runs</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%234ea8ff'/%3E%3Cpath d='M3 3h2v2H3zm0 4h2v2H3zm4 0h2v2H7zm4 0h2v2h-2zm0-4h2v2h-2zM3 11h2v2H3zm4 0h2v2H7zm4 0h2v2h-2z' fill='%23000'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body class="app">
@@ -42,14 +43,27 @@
             episodes: ${s.episodes_trained ?? "—"}
           </div>`;
         const enc = encodeURIComponent(run.name);
+        const reportUrl = API(`/api/runs/${enc}/file/report.html`);
         const links = `
-          <div style="margin-top:8px; display:flex; gap:8px;">
-            <a href="/runs/${enc}" style="color: var(--accent); text-decoration: none;">details →</a>
+          <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+            <a href="${reportUrl}" target="_blank" style="color: var(--accent); text-decoration: none;">details →</a>
             <a href="/?inference=${enc}" style="color: var(--accent); text-decoration: none;">▶ watch</a>
+            <button class="del-btn" data-name="${run.name}" title="delete run"
+                    style="margin-left:auto; background: transparent; color: var(--bad); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px;">×</button>
           </div>`;
         card.innerHTML = `${thumb}<h3>${run.name}</h3>${meta}${links}`;
         grid.appendChild(card);
       }
+      // Delete handler (event delegation).
+      grid.addEventListener("click", async (e) => {
+        const btn = e.target.closest(".del-btn");
+        if (!btn) return;
+        const name = btn.dataset.name;
+        if (!confirm(`delete run "${name}"?`)) return;
+        const r = await fetch(API(`/api/runs/${encodeURIComponent(name)}`),
+                              { method: "DELETE" });
+        if (r.ok) btn.closest(".run-card").remove();
+      });
     })();
   </script>
 </body>

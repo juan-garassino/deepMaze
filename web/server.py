@@ -172,16 +172,39 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
                 )
             agent = train_mod.create_agent(body.get("agent_type", "q"), env,
                                            discount_factor=body.get("gamma", 0.95))
-            train_mod.train_agent(env, agent,
-                                  num_episodes=body.get("num_episodes", 200),
-                                  max_steps=body.get("max_steps", 200),
-                                  bus=app.state.bus,
-                                  policy_snapshot_every=body.get("policy_snapshot_every", 25))
+            train_mod.train_agent(
+                env, agent,
+                num_episodes=body.get("num_episodes", 200),
+                max_steps=body.get("max_steps", 200),
+                bus=app.state.bus,
+                policy_snapshot_every=body.get("policy_snapshot_every", 25),
+                should_stop=lambda: app.state.runs.get(run_id, {}).get("stop"),
+            )
+            app.state.bus.publish(RunEvent(kind="end", info={"run_id": run_id}))
 
         t = threading.Thread(target=_train, daemon=True)
         t.start()
-        app.state.runs[run_id] = {"thread": t}
+        app.state.runs[run_id] = {"thread": t, "stop": False}
         return {"run_id": run_id}
+
+    @app.post("/api/runs/{run_id}/cancel")
+    def cancel_run(run_id: str):
+        entry = app.state.runs.get(run_id)
+        if entry is None:
+            raise HTTPException(404, run_id)
+        entry["stop"] = True
+        return {"cancelled": True, "run_id": run_id}
+
+    @app.delete("/api/runs/{name}")
+    def delete_run(name: str):
+        import shutil
+        if "/" in name or "\\" in name or ".." in name:
+            raise HTTPException(400, "invalid run name")
+        run_dir = os.path.join(os.getcwd(), "maze_rl_runs", name)
+        if not os.path.isdir(run_dir):
+            raise HTTPException(404, name)
+        shutil.rmtree(run_dir)
+        return {"deleted": name}
 
     @app.get("/api/events")
     async def events():
@@ -326,10 +349,21 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
 
     @app.get("/runs/{name}")
     def run_detail_page(name: str):
-        # Inline-render a one-page detail view; falls back to viz/report.html
-        # if it already exists in the run directory.
+        # Always serve the (possibly lazy-generated) report.html via the file
+        # endpoint. Falls back to a server-rendered detail page only if
+        # generation itself fails.
+        if "/" in name or "\\" in name or ".." in name:
+            raise HTTPException(400, "invalid run name")
         run_dir = os.path.join(os.getcwd(), "maze_rl_runs", name)
         report = os.path.join(run_dir, "viz", "report.html")
+        if not os.path.exists(report) and os.path.isdir(run_dir):
+            try:
+                from pathlib import Path
+
+                from report import write_html_report
+                write_html_report(Path(run_dir))
+            except Exception:
+                pass
         if os.path.exists(report):
             return FileResponse(report)
         if not os.path.isdir(run_dir):
@@ -377,7 +411,21 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
 
     @app.get("/api/runs/{name}/file/{artifact}")
     def run_file(name: str, artifact: str):
-        f = os.path.join(os.getcwd(), "maze_rl_runs", name, "viz", artifact)
+        # Validate name to prevent path traversal.
+        if "/" in name or "\\" in name or ".." in name:
+            raise HTTPException(400, "invalid run name")
+        run_dir = os.path.join(os.getcwd(), "maze_rl_runs", name)
+        f = os.path.join(run_dir, "viz", artifact)
+        # Lazy-generate report.html for older runs that don't have one.
+        if artifact == "report.html" and not os.path.exists(f) \
+                and os.path.isdir(run_dir):
+            try:
+                from pathlib import Path
+
+                from report import write_html_report
+                write_html_report(Path(run_dir))
+            except Exception as e:
+                raise HTTPException(500, f"report generation failed: {e}") from e
         if not os.path.exists(f):
             raise HTTPException(404, f)
         return FileResponse(f)

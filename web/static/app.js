@@ -41,6 +41,9 @@ let playing = true;
 let policyArrows = null;
 let visitTrail = new Map();
 let overlayArrows = true, overlayVisits = false;
+let currentAgentType = null;
+const AGENTS_WITH_MEMORY = ["drqn", "dtqn"];
+let currentRunId = null;
 
 function blankMaze(w, h) {
   // Walls-only placeholder used before first generator response.
@@ -225,7 +228,12 @@ function resetCharts() {
 function drawMemory(mem) {
   const w = memCanvas.width, h = memCanvas.height;
   memCtx.fillStyle = "#1c232c"; memCtx.fillRect(0, 0, w, h);
-  if (!mem) { $("memLabel").textContent = "memory: —"; return; }
+  if (!mem) {
+    $("memLabel").textContent = AGENTS_WITH_MEMORY.includes(currentAgentType)
+      ? "memory: (waiting for first step)"
+      : "memory: n/a — this agent has no memory";
+    return;
+  }
   $("memLabel").textContent = mem.kind === "lstm_hidden"
     ? "memory: LSTM hidden state"
     : "memory: attention over past steps";
@@ -306,6 +314,8 @@ function startStream() {
         `ep ${ev.episode} R=${ev.total_reward.toFixed(2)} len=${ev.length}`;
     } else if (ev.type === "run" && ev.kind === "end") {
       flushCharts(); $("status").textContent = "done";
+      $("train").style.display = ""; $("stop").style.display = "none";
+      currentRunId = null;
     }
   };
   es.onerror = () => { $("status").textContent = "stream closed"; };
@@ -315,6 +325,7 @@ function startStream() {
 $("train").addEventListener("click", async () => {
   W = +$("w").value; H = +$("h").value;
   $("status").textContent = "starting…";
+  currentAgentType = $("agent").value;
   resetCharts(); resetLive(); draw();
   startStream();
 
@@ -336,7 +347,17 @@ $("train").addEventListener("click", async () => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) $("status").textContent = "start failed";
+  if (!r.ok) { $("status").textContent = "start failed"; return; }
+  const j = await r.json();
+  currentRunId = j.run_id;
+  $("train").style.display = "none";
+  $("stop").style.display = "";
+});
+
+$("stop").addEventListener("click", async () => {
+  if (!currentRunId) return;
+  await fetch(API(`/api/runs/${currentRunId}/cancel`), { method: "POST" });
+  $("status").textContent = "stopping…";
 });
 
 // --- inference / Watch --------------------------------------------------
@@ -345,6 +366,10 @@ $("watch").addEventListener("click", async () => {
   if (!sel) return;
   const [source, ...rest] = sel.split("/");
   const name = rest.join("/");
+  // infer agent type from the option label "[source] name (atype)"
+  const label = $("model").options[$("model").selectedIndex].textContent;
+  const m = label.match(/\(([^)]+)\)\s*$/);
+  currentAgentType = m ? m[1] : null;
   $("status").textContent = "loading model…";
   resetCharts(); resetLive(); draw();
   startStream();
@@ -371,12 +396,14 @@ $("watch").addEventListener("click", async () => {
 // --- init ---------------------------------------------------------------
 (async function() {
   await generateMaze();
-  // ?inference=name auto-watch
+  // ?inference=name auto-watch — set state directly to avoid the change-event
+  // race where two populateModels() calls overlap before the dropdown settles.
   const params = new URLSearchParams(window.location.search);
   if (params.has("inference")) {
-    document.querySelector('input[name=mode][value=inference]').click();
+    $("trainPanel").style.display = "none";
+    $("inferencePanel").style.display = "";
+    document.querySelector('input[name=mode][value=inference]').checked = true;
     await populateModels();
-    // Prefer asset source, otherwise run.
     const want = params.get("inference");
     const sel = $("model");
     for (const opt of sel.options) {
