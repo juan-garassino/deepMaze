@@ -14,14 +14,14 @@ Five surfaces, increasing in operational distance from the code:
 
 ## OTEL config (Cloud Run env vars)
 
-| Var | Example |
-|---|---|
-| `OTEL_TRACES_EXPORTER` | `gcp_trace` |
-| `OTEL_SERVICE_NAME` | `deepmaze-backend` |
-| `OTEL_SERVICE_VERSION` | `2026-06-03` (optional; defaults to `dev`) |
-| `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` |
-| `OTEL_TRACES_SAMPLER_ARG` | `0.1` (10 % sampled) |
-| `GCP_PROJECT_ID` | `your-project` |
+| Var | Example | Honored by |
+|---|---|---|
+| `OTEL_TRACES_EXPORTER` | `gcp_trace` · `console` | `web/otel.py::instrument` (gates everything) |
+| `OTEL_SERVICE_NAME` | `deepmaze-backend` | `web/otel.py` (defaults to `deepmaze-backend`) |
+| `OTEL_SERVICE_VERSION` | `2026-06-03` | `web/otel.py` (defaults to `dev`) |
+| `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` · `always_on` · `traceidratio` · `always_off` | `web/otel.py::_sampler_from_env` |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.1` (10 % sampled) | `web/otel.py::_sampler_from_env` |
+| `GCP_PROJECT_ID` | `your-project` | `web/otel.py` (passed to `CloudTraceSpanExporter`) |
 
 Local debug: set `OTEL_TRACES_EXPORTER=console` to dump spans to stdout.
 

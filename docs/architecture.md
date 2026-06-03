@@ -89,6 +89,8 @@ deepMaze ships as two layers: the **RL playground** (agents, env, viewer) and th
 | `OTEL_TRACES_EXPORTER` |  |  | activates F | | service.yaml | required |
 | `OTEL_SERVICE_NAME` |  |  |  |  | service.yaml | optional |
 | `OTEL_SERVICE_VERSION` |  |  |  |  | service.yaml | optional |
+| `OTEL_TRACES_SAMPLER` |  |  |  |  | service.yaml | `_sampler_from_env` |
+| `OTEL_TRACES_SAMPLER_ARG` |  |  |  |  | service.yaml | `_sampler_from_env` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | local only | (workload identity in prod) | local only | local only |  |  |
 
 ## Where to look for X
@@ -103,6 +105,7 @@ deepMaze ships as two layers: the **RL playground** (agents, env, viewer) and th
 | Change cold-start behavior | `docker/entrypoint.prod.sh` + `infra/cloudrun/service.yaml` startupProbe |
 | Change trace sampling | `OTEL_TRACES_SAMPLER_ARG` in `infra/cloudrun/service.yaml` |
 | Wire a new external trigger to deploy | `.github/workflows/deploy.yml::on:` |
+| Tear down the GCP stack | `docs/deployment-guide.md` → Tear-down section |
 
 ## Design spec
 

@@ -15,6 +15,17 @@ Or direct URL pattern:
 https://colab.research.google.com/github/juan-garassino/deepMaze/blob/main/notebooks/train_agent.ipynb
 ```
 
+## Open in VS Code (with Colab compute)
+
+The official **Google Colab** VS Code extension lets you edit the `.ipynb` locally while the kernel runs on a Colab GPU runtime:
+
+1. Install the **Google Colab** extension (publisher: Google).
+2. Open `notebooks/train_agent.ipynb` in VS Code.
+3. Kernel picker → **Google Colab → connect** (sign in with the same Google account that has Colab access).
+4. The `/content/deepMaze` path used in cell 2 is still valid because the runtime is still Colab.
+
+Local Jupyter kernel (no Colab compute, CPU only) also works for the small Q-learning test case, but DRQN/DTQN training without a GPU is impractical. If going local, change `/content/deepMaze` in cell 2 to your existing checkout path.
+
 ## What the notebook needs
 
 | Input | Where |
