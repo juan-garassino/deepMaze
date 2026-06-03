@@ -1,5 +1,7 @@
 # Observability (F)
 
+Subsystem F of the MLOps loop. See [`architecture.md`](architecture.md) for how it fits into the broader flow.
+
 Five surfaces, increasing in operational distance from the code:
 
 | Surface | What you see | Setup |

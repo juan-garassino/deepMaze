@@ -79,18 +79,22 @@ the dev loop.
 
 ## MLOps + GCP
 
-| Surface | Link / Path |
+| Surface | Where |
 |---|---|
-| Training notebook (Colab) | [`notebooks/train_agent.ipynb`](notebooks/train_agent.ipynb) |
-| MLflow tracking server | `${MLFLOW_TRACKING_URI}` — provision via [`infra/mlflow/README.md`](infra/mlflow/README.md) |
-| Prefect flows | [`flows/`](flows/) — `retrain` · `promote` · `smoke-test` |
-| Cloud Run backend | `${CLOUD_RUN_URL}` — deployed by [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
-| Observability | [`docs/observability.md`](docs/observability.md) — MLflow · Prefect · Cloud Monitoring · Cloud Trace |
-| Design spec | [`docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md`](docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md) |
+| Architecture (one-page wiring + data flow) | [`docs/architecture.md`](docs/architecture.md) |
+| Cold-start deployment runbook | [`docs/deployment-guide.md`](docs/deployment-guide.md) |
+| Colab training notebook | [`notebooks/`](notebooks/) — see [`notebooks/README.md`](notebooks/README.md) |
+| Prefect flows (retrain · promote · smoke-test) | [`flows/`](flows/) — see [`flows/README.md`](flows/README.md) |
+| Infra provisioning (MLflow · Cloud Run · Prefect) | [`infra/`](infra/) — see [`infra/README.md`](infra/README.md) |
+| CI/CD with Slack | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
+| Observability (MLflow · Cloud Monitoring · Cloud Trace) | [`docs/observability.md`](docs/observability.md) |
+| Original design spec | [`docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md`](docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md) |
 
-### Train in Colab → deploy via PR
+### Train in Colab → deploy via PR (TL;DR)
 
 1. Open `notebooks/train_agent.ipynb` in Colab, set `MLFLOW_TRACKING_URI`, run all cells.
 2. The notebook logs to MLflow and emits `assets/<run_name>/` (model + config + replay).
 3. Locally: `python flows/promote_flow.py <mlflow-run-id>` — Prefect downloads the bundle, validates it, commits it to `assets/`, opens a PR.
 4. Merging the PR triggers `.github/workflows/deploy.yml` → Cloud Run revision with the new asset, Slack notifications on start + end.
+
+Full step-by-step (from an empty GCP project): [`docs/deployment-guide.md`](docs/deployment-guide.md).

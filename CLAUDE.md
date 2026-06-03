@@ -181,7 +181,7 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 Required env / secrets (set in GH repo secrets/vars for deploy; locally via `.env`):
 `GCP_PROJECT_ID`, `GCP_REGION`, `GAR_REPO`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `ASSETS_BUCKET`, `CORS_ORIGINS`, `MLFLOW_TRACKING_URI`, `SLACK_WEBHOOK_URL`, `PREFECT_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS` (local only). Auth on the public Cloud Run service + public MLflow is **out of scope** per the spec; tighten with IAP before any real deploy.
 
-Design spec: `docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md`.
+Reading order: **[`docs/architecture.md`](docs/architecture.md)** for the single-screen wiring → **[`docs/deployment-guide.md`](docs/deployment-guide.md)** for the cold-start runbook → **[`flows/README.md`](flows/README.md)** + **[`infra/README.md`](infra/README.md)** + **[`notebooks/README.md`](notebooks/README.md)** for per-area reference. Original design intent: **[`docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md`](docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md)**.
 
 ## Workspace context
 
