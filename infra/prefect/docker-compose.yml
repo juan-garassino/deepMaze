@@ -1,0 +1,27 @@
+# Optional local Prefect server for dev. Prefect Cloud (free tier) is preferred.
+# Local dev only — credentials hardcoded; do not expose port 5432 publicly.
+# After `up`, create the work pool once: `prefect work-pool create --type process default-process`.
+services:
+  prefect-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: prefect
+      POSTGRES_PASSWORD: prefect
+      POSTGRES_DB: prefect
+    volumes:
+      - prefect_pgdata:/var/lib/postgresql/data
+
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_UI_API_URL: http://localhost:4200/api
+    ports:
+      - "4200:4200"
+    depends_on:
+      - prefect-postgres
+
+volumes:
+  prefect_pgdata: {}

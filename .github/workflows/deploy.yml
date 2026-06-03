@@ -1,0 +1,111 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GAR_REPO: ${{ secrets.GAR_REPO }}
+  CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE }}
+  ASSETS_BUCKET: ${{ vars.ASSETS_BUCKET }}
+  SA_EMAIL: ${{ secrets.CLOUD_RUN_SA_EMAIL }}
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPO }}/deepmaze-backend
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Slack — deploy started
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_TITLE: "deepMaze deploy started"
+          SLACK_MESSAGE: "Commit `${{ github.sha }}` by ${{ github.actor }} → Cloud Run `${{ env.CLOUD_RUN_SERVICE }}`"
+          SLACK_COLOR: "#3aa3e3"
+          MSG_MINIMAL: "true"
+
+      - name: GCP auth (OIDC / Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build, tag, and push image to Artifact Registry
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.prod
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Render Cloud Run service spec (inject new image)
+        run: |
+          envsubst < infra/cloudrun/service.yaml > /tmp/service.rendered.yaml
+          cat /tmp/service.rendered.yaml
+        env:
+          IMAGE: ${{ env.IMAGE }}:${{ github.sha }}
+          SA_EMAIL: ${{ env.SA_EMAIL }}
+          ASSETS_BUCKET: ${{ env.ASSETS_BUCKET }}
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
+
+      - name: Deploy Cloud Run service
+        run: |
+          gcloud run services replace /tmp/service.rendered.yaml \
+            --region "${GCP_REGION}" --quiet
+          gcloud run services add-iam-policy-binding "${CLOUD_RUN_SERVICE}" \
+            --region "${GCP_REGION}" \
+            --member="allUsers" --role="roles/run.invoker" --quiet
+
+      - name: Resolve Cloud Run URL
+        id: url
+        run: |
+          URL=$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+                  --region "${GCP_REGION}" --format='value(status.url)')
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Slack — deploy succeeded
+        if: success()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_TITLE: "deepMaze deploy succeeded"
+          SLACK_MESSAGE: "<${{ steps.url.outputs.url }}|${{ env.CLOUD_RUN_SERVICE }}> revision live · ${{ github.sha }}"
+          SLACK_COLOR: "good"
+          MSG_MINIMAL: "true"
+
+      - name: Slack — deploy failed
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_TITLE: "deepMaze deploy FAILED"
+          SLACK_MESSAGE: "Commit `${{ github.sha }}` failed deploy. See <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run log>."
+          SLACK_COLOR: "danger"
+          MSG_MINIMAL: "true"

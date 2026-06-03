@@ -1,0 +1,38 @@
+# CPU torch + slim image keeps cold start under ~5s on Cloud Run.
+# Asset sync to /app/assets happens in entrypoint.prod.sh via the
+# google-cloud-storage Python lib (no full Cloud SDK install needed).
+FROM python:3.12-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+      torch==2.* \
+      --index-url https://download.pytorch.org/whl/cpu
+
+COPY requirements.txt .
+RUN grep -vE '^(torch|pytest)' requirements.txt > /tmp/req.txt && \
+    pip install --no-cache-dir -r /tmp/req.txt && \
+    pip install --no-cache-dir \
+      gunicorn==23.* \
+      google-cloud-storage==2.18.* \
+      opentelemetry-instrumentation-fastapi==0.49b0 \
+      opentelemetry-exporter-gcp-trace==1.7.* \
+      opentelemetry-sdk==1.28.*
+
+COPY . .
+
+RUN useradd -m -u 1000 deepmaze && chown -R deepmaze:deepmaze /app
+USER deepmaze
+
+ENV PYTHONPATH=/app:/app/agents:/app/environment:/app/training:/app/utils:/app/config:/app/web \
+    PORT=8000 \
+    ASSETS_BUCKET=""
+
+EXPOSE 8000
+
+CMD ["bash", "docker/entrypoint.prod.sh"]

@@ -109,6 +109,12 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    try:
+        from web.otel import instrument as _otel_instrument
+        _otel_instrument(app)
+    except ImportError:
+        pass
+
     if os.path.isdir(STATIC):
         app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 .deepeval/
 maze_rl_runs/
 .venv/
@@ -8,3 +9,6 @@ maze_rl_runs/
 .DS_Store
 *.egg-info/
 .github/
+notebooks/
+docs/
+*.ipynb

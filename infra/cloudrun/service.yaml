@@ -1,0 +1,58 @@
+# Cloud Run service spec for the deepMaze inference backend.
+# Apply via: gcloud run services replace infra/cloudrun/service.yaml --region=$GCP_REGION
+# Or render + apply in CI via deploy.yml.
+# envsubst variables (must be set in deploy.yml or local shell):
+#   IMAGE, SA_EMAIL, ASSETS_BUCKET, GCP_PROJECT_ID, CORS_ORIGINS
+# If CORS_ORIGINS is empty, server.py defaults to `*` (dev-only).
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: deepmaze-backend
+  annotations:
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "2"
+        run.googleapis.com/cpu-throttling: "true"
+    spec:
+      serviceAccountName: ${SA_EMAIL}
+      containerConcurrency: 20
+      timeoutSeconds: 300
+      containers:
+        - image: ${IMAGE}
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          env:
+            - name: PORT
+              value: "8000"
+            - name: CORS_ORIGINS
+              value: ${CORS_ORIGINS}
+            - name: ASSETS_BUCKET
+              value: ${ASSETS_BUCKET}
+            - name: GCP_PROJECT_ID
+              value: ${GCP_PROJECT_ID}
+            - name: OTEL_SERVICE_NAME
+              value: deepmaze-backend
+            - name: OTEL_TRACES_EXPORTER
+              value: gcp_trace
+            - name: OTEL_TRACES_SAMPLER
+              value: parentbased_traceidratio
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: "0.1"
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+  traffic:
+    - latestRevision: true
+      percent: 100

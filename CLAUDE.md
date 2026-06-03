@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A maze-based reinforcement learning playground with a full visualization stack — Q-learning / DQN / PPO agents, sprite-based replay (WebP/GIF/MP4), training-curve plots, policy + visitation heatmaps, and a FastAPI + vanilla-JS browser viewer.
+A maze-based reinforcement learning playground with a full visualization stack — five agents (Q-learning / DQN / PPO / **DRQN** / **DTQN**, the latter two memory-equipped), sprite-based replay (WebP/GIF/MP4), training-curve plots, policy + visitation + behavioral-rollout heatmaps, and a FastAPI + vanilla-JS browser viewer. Supports live training **and** pretrained-model inference over the same SSE pipeline.
 
 Ported and modernized from two local references; **do not** edit those references, treat them as read-only history:
 
@@ -16,13 +16,17 @@ Ported and modernized from two local references; **do not** edit those reference
 
 ```
 deepMaze/
-├── agents/       base_agent / q_agent / dqn_agent / ppo_agent
+├── agents/       base_agent / q_agent / dqn_agent / ppo_agent / drqn_agent / dtqn_agent / nets / encoders
 ├── config/       (reserved)
 ├── environment/  maze.py — MazeEnvironment + RenderMaze
 ├── training/     train.py + recorders.py
 ├── tests/        pytest suite
 ├── utils/        manager.py + viz_events.py + visualizations.py + replay_buffer.py
-├── web/          FastAPI server + static/ (HTML + JS canvas + Chart.js)
+├── web/          FastAPI server + static/ + otel.py (Cloud Trace instrumentation)
+├── notebooks/    train_agent.ipynb — Colab DRQN/DTQN trainer → MLflow + assets bundle
+├── flows/        Prefect flows — retrain / promote / smoke-test
+├── infra/        mlflow/ (Cloud Run + Cloud SQL + GCS) · cloudrun/service.yaml · prefect/
+├── docker/       entrypoint.sh (dev) + entrypoint.prod.sh (GCS asset sync + gunicorn)
 └── main.py       CLI entrypoint
 ```
 
@@ -34,7 +38,7 @@ deepMaze/
 
 **Recorders** (`training/recorders.py`). `MetricsCollector`, `TrajectoryCollector`, `TqdmTail`, `ReplayRecorder`. Pure subscribers; stateless w.r.t. training.
 
-**Agent factory** (`training/train.py::create_agent`). Dispatches on `'q' | 'dqn' | 'ppo'`. Adding an algorithm = new class in `agents/` + branch here.
+**Agent factory** (`training/train.py::create_agent`). Dispatches on `'q' | 'dqn' | 'ppo' | 'drqn' | 'dtqn'`. Adding an algorithm = new class in `agents/` + dataclass in `config/hyperparameters.py` + branch here.
 
 **MazeManager** (`utils/manager.py`). Single owner of per-run artifact paths (`maze_rl_runs/run_TS/...`). All saves route through it — never write artifacts from agents/training directly. `viz_dir()` returns the per-run viz folder.
 
@@ -46,10 +50,13 @@ deepMaze/
 |---|---|---|
 | Replay (WebP/GIF/MP4) | `RenderMaze` → `MazeManager.save_replay` | post-training, greedy episode |
 | Training curves | `visualizations.plot_training_curves` | post-training from `MetricsCollector` |
-| Policy + V(s) heatmap | `visualizations.plot_policy_heatmap` | post-training; accepts dict (tabular) or callable (NN) |
+| Policy + V(s) heatmap | `visualizations.plot_policy_heatmap` | post-training; tabular dict OR agent w/ `q_values_batch` |
+| Behavioral rollout | `visualizations.plot_behavioral_rollout` | per-cell greedy rollout → arrows. The honest answer for partial-obs / memory agents |
 | Visitation heatmap | `visualizations.plot_visitation` | post-training from `TrajectoryCollector` |
+| HTML run report | `utils/report.py::write_html_report` | post-training; base64-inlined; shareable standalone |
+| Memory strip (live) | `static/app.js drawMemory()` | per-step SSE; DRQN hidden state / DTQN attention row |
 | Live CLI tail | `recorders.TqdmTail` | `--live` or TTY |
-| Web viewer | `web/server.py` SSE + `static/app.js` | `--live_web` or `python web/server.py` |
+| Web viewer | `web/server.py` SSE + `static/app.js` | `--live_web`, `python web/server.py`, or `docker compose up` |
 
 ## Common commands
 
@@ -78,6 +85,18 @@ docker compose up --build
 
 # Tests
 python -m pytest tests/ -q
+
+# MLflow tracking server — local dev
+docker compose -f infra/mlflow/docker-compose.local.yml up --build
+# → http://localhost:5000
+
+# MLflow tracking server — GCP (Cloud Run + Cloud SQL + GCS)
+bash infra/mlflow/deploy.sh    # see infra/mlflow/README.md for required env
+
+# Prefect flows (one-time pool setup; then deploy)
+prefect work-pool create --type process default-process
+prefect deploy --all --prefect-file flows/prefect.yaml
+python flows/promote_flow.py <mlflow-run-id>
 ```
 
 ## Pretrained inference
@@ -107,12 +126,14 @@ suite trains only tiny tabular Q-agents on 5×5 mazes.
 
 ## Docker
 
-Two services orchestrated by `docker-compose.yml`:
+Two services orchestrated by `docker-compose.yml` (dev):
 
 | Service  | Image                  | Port | Mounts                             |
 |----------|------------------------|------|------------------------------------|
 | backend  | `Dockerfile`           | 8000 | `./maze_rl_runs`, `./assets`       |
 | frontend | `Dockerfile.frontend`  | 8080 | (none)                             |
+
+`Dockerfile.prod` builds the slim Cloud Run image: drops dev deps, adds gunicorn + OTEL + gsutil, and `docker/entrypoint.prod.sh` syncs `gs://${ASSETS_BUCKET}/` → `/app/assets/` at startup. CI builds + pushes it to Artifact Registry via `.github/workflows/deploy.yml`.
 
 The frontend is plain nginx serving `web/static`. `${API_BASE_URL}` is
 substituted into `web/static/config.js` at container start; the JS reads
@@ -130,9 +151,11 @@ detects the unsubstituted template and falls back to same-origin.
 
 ```
 maze_rl_runs/run_YYYYMMDD_HHMMSS/
-    config.json   results.json   maze_rl.log   model.{pt,pkl}
+    config.json   results.json   maze_rl.log
+    model.{pt,pkl}   model.best.{pt,pkl}   best_eval.json
     viz/
-        replay.webp      curves.png      policy.png      visitation.png
+        replay.webp   curves.png   policy.png
+        visitation.png   rollout.png   report.html
 ```
 
 ## Known constraints
@@ -143,6 +166,22 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 - Sprite sheet format: 16×16 source tiles; required sprite indices: `0=HOLE, 1=LAND, 2=LAVA, 3=EXIT, 4=AGENT`. Cell-value AGENT_BASE is 5 (agents are `5 + agent_index`).
 - Pretrained-model `config.json` must match the architecture: shape mismatches at `load_state_dict` time will raise.
 - Multi-treasure: `n_treasures > 1` places extras on reachable LAND; lava placement excludes all start→treasure paths. `collect_all=True` keeps the episode running until every treasure is consumed.
+
+## MLOps surfaces
+
+| Surface | What it does | Where |
+|---|---|---|
+| Colab notebook (A) | trains DRQN/DTQN, logs to MLflow, emits `assets/<name>/` bundle | `notebooks/train_agent.ipynb` |
+| MLflow server (B) | experiment tracking + model registry; Cloud Run + Cloud SQL + GCS | `infra/mlflow/` |
+| Cloud Run backend (C) | slim prod image; GCS asset hot-sync at startup | `Dockerfile.prod` + `infra/cloudrun/service.yaml` |
+| GHA + Slack (E) | OIDC → GAR build/push → Cloud Run deploy + Slack notifications | `.github/workflows/deploy.yml` |
+| Prefect flows (D) | retrain (watch MLflow), promote (run_id → PR or GCS), daily smoke test | `flows/` |
+| OTEL / Cloud Trace (F) | per-request spans from FastAPI | `web/otel.py`; see `docs/observability.md` |
+
+Required env / secrets (set in GH repo secrets/vars for deploy; locally via `.env`):
+`GCP_PROJECT_ID`, `GCP_REGION`, `GAR_REPO`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `ASSETS_BUCKET`, `CORS_ORIGINS`, `MLFLOW_TRACKING_URI`, `SLACK_WEBHOOK_URL`, `PREFECT_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS` (local only). Auth on the public Cloud Run service + public MLflow is **out of scope** per the spec; tighten with IAP before any real deploy.
+
+Design spec: `docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md`.
 
 ## Workspace context
 

@@ -1,0 +1,35 @@
+# Local dev only — credentials are hardcoded; never use this compose in prod.
+services:
+  mlflow-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow
+      POSTGRES_DB: mlflow
+    volumes:
+      - mlflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORT: "8080"
+      BACKEND_STORE_URI: postgresql://mlflow:mlflow@mlflow-postgres:5432/mlflow
+      ARTIFACT_ROOT: /mlartifacts
+    volumes:
+      - mlflow_artifacts:/mlartifacts
+    ports:
+      - "5000:8080"
+    depends_on:
+      mlflow-postgres:
+        condition: service_healthy
+
+volumes:
+  mlflow_pgdata: {}
+  mlflow_artifacts: {}

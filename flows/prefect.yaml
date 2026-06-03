@@ -1,0 +1,28 @@
+# Prefect deployment manifest.
+# Apply with: `prefect deploy --all`
+name: deepmaze
+prefect-version: 3.x
+
+deployments:
+  - name: retrain
+    entrypoint: flows/retrain_flow.py:retrain_flow
+    work_pool:
+      name: default-process
+    schedules: []           # triggered manually after a Colab session
+    parameters: {}
+
+  - name: promote
+    entrypoint: flows/promote_flow.py:promote_flow
+    work_pool:
+      name: default-process
+    schedules: []           # triggered with a run_id parameter
+    parameters: {}
+
+  - name: smoke-test
+    entrypoint: flows/smoke_test_flow.py:smoke_test_flow
+    work_pool:
+      name: default-process
+    schedules:
+      - cron: "0 9 * * *"   # daily 09:00 UTC
+        timezone: UTC
+    parameters: {}

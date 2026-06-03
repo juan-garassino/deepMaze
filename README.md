@@ -76,3 +76,21 @@ Local tests train only tiny tabular Q-agents on 5×5 mazes — heavy models
 (DRQN/DTQN/CNN) are exercised via inference only, with training done in
 Colab. See `CLAUDE.md` for architectural seams and `CONTRIBUTING.md` for
 the dev loop.
+
+## MLOps + GCP
+
+| Surface | Link / Path |
+|---|---|
+| Training notebook (Colab) | [`notebooks/train_agent.ipynb`](notebooks/train_agent.ipynb) |
+| MLflow tracking server | `${MLFLOW_TRACKING_URI}` — provision via [`infra/mlflow/README.md`](infra/mlflow/README.md) |
+| Prefect flows | [`flows/`](flows/) — `retrain` · `promote` · `smoke-test` |
+| Cloud Run backend | `${CLOUD_RUN_URL}` — deployed by [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
+| Observability | [`docs/observability.md`](docs/observability.md) — MLflow · Prefect · Cloud Monitoring · Cloud Trace |
+| Design spec | [`docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md`](docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md) |
+
+### Train in Colab → deploy via PR
+
+1. Open `notebooks/train_agent.ipynb` in Colab, set `MLFLOW_TRACKING_URI`, run all cells.
+2. The notebook logs to MLflow and emits `assets/<run_name>/` (model + config + replay).
+3. Locally: `python flows/promote_flow.py <mlflow-run-id>` — Prefect downloads the bundle, validates it, commits it to `assets/`, opens a PR.
+4. Merging the PR triggers `.github/workflows/deploy.yml` → Cloud Run revision with the new asset, Slack notifications on start + end.
