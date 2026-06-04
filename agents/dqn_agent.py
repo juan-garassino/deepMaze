@@ -79,7 +79,6 @@ class DQNAgent(BaseAgent):
                 self.target_model.load_state_dict(self.model.state_dict())
 
         self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
-        self.add_training_reward(reward)
 
     def q_values(self, state):
         with torch.no_grad():

@@ -119,13 +119,26 @@ class EventBus:
             self._queues.append(q)
         return q
 
+    def unsubscribe_queue(self, q: queue.Queue) -> None:
+        with self._lock:
+            if q in self._queues:
+                self._queues.remove(q)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._handlers.clear()
+            self._queues.clear()
+
     def publish(self, event: VizEvent) -> None:
-        for fn in list(self._handlers):
+        with self._lock:
+            handlers = list(self._handlers)
+            queues = list(self._queues)
+        for fn in handlers:
             try:
                 fn(event)
             except Exception:  # pragma: no cover — handlers must not crash training
                 pass
-        for q in list(self._queues):
+        for q in queues:
             try:
                 q.put_nowait(event)
             except queue.Full:

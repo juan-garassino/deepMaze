@@ -69,7 +69,6 @@ class PPOAgent(BaseAgent):
             self._flat(state), int(action), float(reward),
             self._flat(next_state), float(done), self._last_logprob,
         ))
-        self.add_training_reward(reward)
         if len(self._buf) >= self.n_steps:
             self._learn()
 

@@ -26,7 +26,9 @@ def seed_everything(seed: int | None) -> int | None:
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-        # determinism over speed; cheap for tiny nets.
+        # Strict determinism (True) requires CUBLAS_WORKSPACE_CONFIG and
+        # breaks attention ops with no deterministic impl. Speed over strict
+        # — manual_seed still gives bit-stable runs for our op set.
         torch.use_deterministic_algorithms(False)
     except ImportError:
         pass

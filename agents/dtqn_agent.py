@@ -206,7 +206,6 @@ class DTQNAgent(BaseAgent):
 
     def update(self, state, action, reward, next_state, done):
         self.buf.add_step(state, action, reward, next_state, done)
-        self.add_training_reward(reward)
         self._step += 1
         if done:
             self.on_episode_start()  # also resets ctx; episode already committed

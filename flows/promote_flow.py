@@ -10,7 +10,6 @@ Steps:
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -20,10 +19,7 @@ from pathlib import Path
 import mlflow
 from prefect import flow, get_run_logger, task
 
-REQUIRED_KEYS = {
-    "agent_type", "maze_width", "maze_height", "generator",
-    "n_treasures", "n_lava", "seed", "run_name",
-}
+from flows.bundle_schema import validate_bundle as _validate_bundle
 
 
 @task
@@ -45,12 +41,7 @@ def download_bundle(run_id: str) -> Path:
 
 @task
 def validate_bundle(bundle: Path) -> None:
-    cfg = json.loads((bundle / "config.json").read_text())
-    missing = REQUIRED_KEYS - set(cfg)
-    if missing:
-        raise ValueError(f"config.json missing required keys: {missing}")
-    if not any((bundle / f).exists() for f in ("model.pt", "model.pkl")):
-        raise ValueError("bundle missing model.{pt,pkl}")
+    _validate_bundle(bundle)
 
 
 @task

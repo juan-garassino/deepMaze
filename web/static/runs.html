@@ -28,30 +28,55 @@
       const status = document.getElementById("status");
       if (!body.runs.length) { status.textContent = "no runs found"; return; }
       status.textContent = `${body.runs.length} runs`;
+      const fmtPct = (v) => v != null ? (v * 100).toFixed(0) + "%" : "—";
+      const fmtNum = (v) => v != null ? v.toFixed(2) : "—";
       for (const run of body.runs) {
         const card = document.createElement("div");
         card.className = "run-card";
-        const replay = run.artifacts.find(a => a.endsWith(".webp") || a.endsWith(".gif"));
-        const thumb = replay
-          ? `<div class="thumb"><img loading="lazy" src="${API('/api/runs/' + encodeURIComponent(run.name) + '/file/' + replay)}"></div>`
-          : `<div class="thumb"></div>`;
-        const s = run.summary || {};
-        const meta = `
-          <div class="meta">
-            success: ${s.success_rate != null ? (s.success_rate * 100).toFixed(0) + "%" : "—"}<br>
-            avg_reward: ${s.avg_reward != null ? s.avg_reward.toFixed(2) : "—"}<br>
-            episodes: ${s.episodes_trained ?? "—"}
-          </div>`;
         const enc = encodeURIComponent(run.name);
-        const reportUrl = API(`/api/runs/${enc}/file/report.html`);
-        const links = `
-          <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
-            <a href="${reportUrl}" target="_blank" style="color: var(--accent); text-decoration: none;">details →</a>
-            <a href="/?inference=${enc}" style="color: var(--accent); text-decoration: none;">▶ watch</a>
-            <button class="del-btn" data-name="${run.name}" title="delete run"
-                    style="margin-left:auto; background: transparent; color: var(--bad); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px;">×</button>
-          </div>`;
-        card.innerHTML = `${thumb}<h3>${run.name}</h3>${meta}${links}`;
+
+        const thumbDiv = document.createElement("div");
+        thumbDiv.className = "thumb";
+        const replay = run.artifacts.find(a => a.endsWith(".webp") || a.endsWith(".gif"));
+        if (replay) {
+          const img = document.createElement("img");
+          img.loading = "lazy";
+          img.src = API('/api/runs/' + enc + '/file/' + encodeURIComponent(replay));
+          thumbDiv.appendChild(img);
+        }
+
+        const h3 = document.createElement("h3");
+        h3.textContent = run.name;             // text, not HTML — XSS-safe
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const s = run.summary || {};
+        meta.append(
+          `success: ${fmtPct(s.success_rate)}`, document.createElement("br"),
+          `avg_reward: ${fmtNum(s.avg_reward)}`, document.createElement("br"),
+          `episodes: ${s.episodes_trained ?? "—"}`,
+        );
+
+        const linkRow = document.createElement("div");
+        linkRow.style.cssText = "margin-top:8px; display:flex; gap:8px; align-items:center;";
+        const details = document.createElement("a");
+        details.href = API(`/api/runs/${enc}/file/report.html`);
+        details.target = "_blank";
+        details.style.cssText = "color: var(--accent); text-decoration: none;";
+        details.textContent = "details →";
+        const watch = document.createElement("a");
+        watch.href = `/?inference=${enc}`;
+        watch.style.cssText = "color: var(--accent); text-decoration: none;";
+        watch.textContent = "▶ watch";
+        const del = document.createElement("button");
+        del.className = "del-btn";
+        del.dataset.name = run.name;
+        del.title = "delete run";
+        del.style.cssText = "margin-left:auto; background: transparent; color: var(--bad); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px;";
+        del.textContent = "×";
+        linkRow.append(details, watch, del);
+
+        card.append(thumbDiv, h3, meta, linkRow);
         grid.appendChild(card);
       }
       // Delete handler (event delegation).

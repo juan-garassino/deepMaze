@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 class BaseAgent(ABC):
     def __init__(self, action_size):
         self.action_size = action_size
-        self.training_rewards = []
         self.last_loss = None
         self.deterministic = False
         self._saved_epsilon = None
@@ -44,6 +43,3 @@ class BaseAgent(ABC):
         """Snapshot of the agent's current internal memory for live viz.
         Returns None unless the agent has a useful memory (DRQN/DTQN)."""
         return None
-
-    def add_training_reward(self, reward):
-        self.training_rewards.append(reward)

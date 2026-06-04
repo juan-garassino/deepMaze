@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-for sub in ("agents", "environment", "training", "utils", "config"):
+for sub in ("agents", "environment", "training", "utils", "web", "config"):
     p = os.path.join(_ROOT, sub)
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -53,30 +53,40 @@ def _load_model_into(agent, path: str) -> None:
         return
     import torch
     module = getattr(agent, "model", None) or getattr(agent, "ac", None)
-    state = torch.load(path, map_location=getattr(agent, "device", "cpu"))
+    try:
+        state = torch.load(path, map_location=getattr(agent, "device", "cpu"),
+                           weights_only=True)
+    except (TypeError, RuntimeError):
+        # older torch (<2.1) or non-tensor pickle: fall back to legacy load
+        state = torch.load(path, map_location=getattr(agent, "device", "cpu"))
     module.load_state_dict(state)
 
 
 def _render_detail(name: str, results: dict, artifacts: list[str]) -> str:
     """Server-rendered run detail page when no static viz/report.html exists."""
+    import html
+    from urllib.parse import quote
+    safe_name = html.escape(name)
+    safe_url_name = quote(name, safe="")
     parts = ["<html><head><meta charset='utf-8'>",
              "<link rel='stylesheet' href='/static/styles.css'>",
-             f"<title>{name}</title></head><body class='app'>",
+             f"<title>{safe_name}</title></head><body class='app'>",
              "<header class='topbar'><h1>deepMaze</h1>",
              "<nav><a href='/'>Train</a><a href='/runs' class='active'>Runs</a>",
              "<a href='/memory'>Memory</a></nav></header>",
              "<main class='detail'>",
-             f"<h2 class='detail-full'>{name}</h2>"]
+             f"<h2 class='detail-full'>{safe_name}</h2>"]
     if results:
-        summary = "\n".join(f"{k}: {v}" for k, v in results.items()
-                            if not isinstance(v, (list, dict)))
+        summary = "\n".join(
+            f"{html.escape(str(k))}: {html.escape(str(v))}"
+            for k, v in results.items() if not isinstance(v, (list, dict))
+        )
         parts.append(f"<pre class='summary detail-full'>{summary}</pre>")
     for a in artifacts:
-        url = f"/api/runs/{name}/file/{a}"
-        if a.endswith(".webp") or a.endswith(".gif") or a.endswith(".mp4"):
-            parts.append(f"<div><h2>{a}</h2><img src='{url}' alt='{a}'></div>")
-        elif a.endswith(".png"):
-            parts.append(f"<div><h2>{a}</h2><img src='{url}' alt='{a}'></div>")
+        safe_artifact = html.escape(a)
+        url = f"/api/runs/{safe_url_name}/file/{quote(a, safe='')}"
+        if a.endswith((".webp", ".gif", ".mp4", ".png")):
+            parts.append(f"<div><h2>{safe_artifact}</h2><img src='{url}' alt='{safe_artifact}'></div>")
     parts.append("</main></body></html>")
     return "\n".join(parts)
 
@@ -204,10 +214,12 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
     @app.delete("/api/runs/{name}")
     def delete_run(name: str):
         import shutil
+        from pathlib import Path
         if "/" in name or "\\" in name or ".." in name:
             raise HTTPException(400, "invalid run name")
-        run_dir = os.path.join(os.getcwd(), "maze_rl_runs", name)
-        if not os.path.isdir(run_dir):
+        base = Path(os.getcwd(), "maze_rl_runs").resolve()
+        run_dir = (base / name).resolve()
+        if run_dir.parent != base or not run_dir.is_dir():
             raise HTTPException(404, name)
         shutil.rmtree(run_dir)
         return {"deleted": name}
@@ -218,19 +230,22 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
 
         async def gen():
             loop = asyncio.get_event_loop()
-            while True:
-                try:
-                    ev = await loop.run_in_executor(None, q.get, True, 30)
-                except Exception:
-                    yield ": keepalive\n\n"
-                    continue
-                if ev is None:
-                    yield ": keepalive\n\n"
-                    continue
-                yield f"data: {_event_to_json(ev)}\n\n"
-                if isinstance(ev, RunEvent) and ev.kind == "end":
-                    yield "event: end\ndata: {}\n\n"
-                    break
+            try:
+                while True:
+                    try:
+                        ev = await loop.run_in_executor(None, q.get, True, 30)
+                    except Exception:
+                        yield ": keepalive\n\n"
+                        continue
+                    if ev is None:
+                        yield ": keepalive\n\n"
+                        continue
+                    yield f"data: {_event_to_json(ev)}\n\n"
+                    if isinstance(ev, RunEvent) and ev.kind == "end":
+                        yield "event: end\ndata: {}\n\n"
+                        break
+            finally:
+                app.state.bus.unsubscribe_queue(q)
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
@@ -241,14 +256,26 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
         """Return a server-generated maze. Used by the Web editor."""
         import importlib
         body = await req.json()
+        width = int(body.get("width", 10))
+        height = int(body.get("height", 10))
+        density = float(body.get("density", 0.2))
+        n_lava = int(body.get("n_lava", 0))
+        n_treasures = int(body.get("n_treasures", 1))
+        generator = body.get("generator", "dfs")
+        if not (5 <= width <= 50 and 5 <= height <= 50):
+            raise HTTPException(400, "width/height must be in [5, 50]")
+        if not (0.0 <= density <= 0.6):
+            raise HTTPException(400, "density must be in [0.0, 0.6]")
+        if not (0 <= n_lava <= 100):
+            raise HTTPException(400, "n_lava must be in [0, 100]")
+        if not (1 <= n_treasures <= 20):
+            raise HTTPException(400, "n_treasures must be in [1, 20]")
+        if generator not in ("open", "dfs", "random"):
+            raise HTTPException(400, "generator must be open|dfs|random")
         maze_mod = importlib.import_module("maze")
         env = maze_mod.MazeEnvironment(
-            width=body.get("width", 10),
-            height=body.get("height", 10),
-            density=body.get("density", 0.2),
-            generator=body.get("generator", "dfs"),
-            n_lava=body.get("n_lava", 0),
-            n_treasures=body.get("n_treasures", 1),
+            width=width, height=height, density=density,
+            generator=generator, n_lava=n_lava, n_treasures=n_treasures,
             seed=body.get("seed"),
         )
         return {"maze": env.maze.tolist(),
@@ -417,24 +444,27 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
 
     @app.get("/api/runs/{name}/file/{artifact}")
     def run_file(name: str, artifact: str):
-        # Validate name to prevent path traversal.
+        from pathlib import Path
         if "/" in name or "\\" in name or ".." in name:
             raise HTTPException(400, "invalid run name")
-        run_dir = os.path.join(os.getcwd(), "maze_rl_runs", name)
-        f = os.path.join(run_dir, "viz", artifact)
-        # Lazy-generate report.html for older runs that don't have one.
-        if artifact == "report.html" and not os.path.exists(f) \
-                and os.path.isdir(run_dir):
+        if "/" in artifact or "\\" in artifact or ".." in artifact:
+            raise HTTPException(400, "invalid artifact name")
+        base = Path(os.getcwd(), "maze_rl_runs").resolve()
+        viz_dir = (base / name / "viz").resolve()
+        if base not in viz_dir.parents and viz_dir != base:
+            raise HTTPException(400, "invalid path")
+        f = (viz_dir / artifact).resolve()
+        if viz_dir not in f.parents:
+            raise HTTPException(400, "invalid path")
+        if artifact == "report.html" and not f.exists() and viz_dir.parent.is_dir():
             try:
-                from pathlib import Path
-
                 from report import write_html_report
-                write_html_report(Path(run_dir))
+                write_html_report(viz_dir.parent)
             except Exception as e:
                 raise HTTPException(500, f"report generation failed: {e}") from e
-        if not os.path.exists(f):
-            raise HTTPException(404, f)
-        return FileResponse(f)
+        if not f.exists():
+            raise HTTPException(404, str(f))
+        return FileResponse(str(f))
 
     @app.get("/api/artifacts")
     def artifacts():
