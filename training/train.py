@@ -44,16 +44,20 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                 emit_steps: bool = True,
                 emit_q_values: bool = False,
                 random_start: bool = True,
-                should_stop=None):
+                should_stop=None,
+                regenerate_every: int | None = None):
     if bus is not None:
         bus.publish(RunEvent(kind="start",
                              info={"num_episodes": num_episodes,
                                    "max_steps": max_steps,
-                                   "agent": type(agent).__name__}))
+                                   "agent": type(agent).__name__,
+                                   "regenerate_every": regenerate_every}))
 
     for episode in range(num_episodes):
         if should_stop is not None and should_stop():
             break
+        if regenerate_every and episode > 0 and episode % regenerate_every == 0:
+            env.regenerate()
         state = env.reset(at_start=not random_start)
         if hasattr(agent, "on_episode_start"):
             agent.on_episode_start()
@@ -163,14 +167,17 @@ def simulate_episode(env: MazeEnvironment, agent, max_steps: int,
 
 
 def evaluate_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
-                   deterministic: bool = True
+                   deterministic: bool = True,
+                   regenerate_each: bool = False,
                    ) -> tuple[float, float, float]:
     rewards, lengths, successes = [], [], 0
     prev = getattr(agent, "deterministic", False)
     if deterministic:
         agent.set_deterministic(True)
     try:
-        for _ in range(num_episodes):
+        for i in range(num_episodes):
+            if regenerate_each and i > 0:
+                env.regenerate()
             states, _, actions, total = simulate_episode(env, agent, max_steps)
             rewards.append(total)
             lengths.append(len(actions))

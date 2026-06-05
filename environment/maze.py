@@ -51,11 +51,16 @@ class MazeEnvironment:
         self._rng = np.random.default_rng(seed)
         self.action_size = 4
 
+        self._remaining: set[tuple[int, int]] = set()
+        self.agent_positions: list[tuple[int, int]] = []
+        self._build_layout()
+        self.reset()
+
+    def _build_layout(self) -> None:
+        """(Re)build walls + treasures + lava + start. Uses current self._rng."""
         self.start_pos = (1, 1)
         # First treasure stays at the legacy corner; extras placed later.
-        self.treasure_positions: list[tuple[int, int]] = [
-            (self.height - 2, self.width - 2),
-        ]
+        self.treasure_positions = [(self.height - 2, self.width - 2)]
         self.maze = self._generate_maze()
         if self.ensure_solvable:
             self._carve_path_if_needed()
@@ -67,10 +72,14 @@ class MazeEnvironment:
             self._place_extra_treasures(self.n_treasures - 1)
         if self.n_lava > 0:
             self._place_lava(self.n_lava)
-        # tracks per-episode collected treasures (used when collect_all)
-        self._remaining: set[tuple[int, int]] = set()
-        self.agent_positions: list[tuple[int, int]] = []
-        self.reset()
+
+    def regenerate(self, seed: int | None = None) -> np.ndarray:
+        """Re-roll the maze layout. If seed is given, reseeds the rng first.
+        Returns the new observation after a reset()."""
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+        self._build_layout()
+        return self.reset()
 
     # back-compat alias
     @property
