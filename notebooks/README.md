@@ -4,7 +4,7 @@ Colab notebooks that train heavy agents (DRQN, DTQN) — the local pytest suite 
 
 | Notebook | What it does |
 |---|---|
-| [`train_agent.ipynb`](train_agent.ipynb) | Mounts Google Drive, clones the repo at HEAD, trains **DRQN then DTQN** sequentially on a 12×12 multi-treasure + lava maze, persists MLflow runs and `assets/<name>/` bundles to Drive. No GCP required. |
+| [`train_agent.ipynb`](train_agent.ipynb) | Mounts Google Drive, clones the repo at HEAD, trains **DRQN then DTQN** sequentially on a 30×60 multi-treasure + lava maze, persists MLflow runs and `assets/<name>/` bundles to Drive. No GCP required. |
 
 ## Open in Colab
 
@@ -60,10 +60,10 @@ mlflow ui --backend-store-uri "file://$(pwd)/mlruns"
 | Symptom | Cause | Fix |
 |---|---|---|
 | `drive.mount` prompts for code every cell | runtime hot-restarted | re-run cell 1 once per fresh runtime |
-| Slow `mlflow.log_metrics` calls | Drive FUSE round-trips | expected; first DRQN run with 3000 episodes ≈ 20 min on T4 |
+| Slow `mlflow.log_metrics` calls | Drive FUSE round-trips | expected; DRQN at 6000 episodes on 30×60 is ~1–2 h on T4 |
 | `OSError: [Errno 28] No space left` | Colab's `/tmp` filled by replay frames | lower `MAX_STEPS` or `NUM_EPISODES`, or restart the runtime |
 | Notebook hangs early in cell 6 | DRQN replay buffer warming up — first 1k steps are slow | wait; or interrupt and restart with smaller `NUM_EPISODES` |
-| DTQN OOM on T4 | transformer attention with `MAX_STEPS=300` | drop `MAX_STEPS` to 200, or switch runtime to A100 |
+| DTQN OOM on T4 | transformer attention with `MAX_STEPS=1500` and 30×60 maze | drop `MAX_STEPS` (e.g. 800) or `MAZE_HEIGHT`, or switch runtime to A100 |
 
 ## Promote a trained model
 
