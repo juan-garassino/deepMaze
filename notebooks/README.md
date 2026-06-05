@@ -4,7 +4,7 @@ Colab notebooks that train heavy agents (DRQN, DTQN) — the local pytest suite 
 
 | Notebook | What it does |
 |---|---|
-| [`train_agent.ipynb`](train_agent.ipynb) | Clones the repo at HEAD, trains a DRQN or DTQN agent, logs to MLflow, emits an `assets/<name>/` bundle ready for the existing pretrained-inference path. |
+| [`train_agent.ipynb`](train_agent.ipynb) | Mounts Google Drive, clones the repo at HEAD, trains **DRQN then DTQN** sequentially on a 12×12 multi-treasure + lava maze, persists MLflow runs and `assets/<name>/` bundles to Drive. No GCP required. |
 
 ## Open in Colab
 
@@ -30,35 +30,44 @@ Local Jupyter kernel (no Colab compute, CPU only) also works for the small Q-lea
 
 | Input | Where |
 |---|---|
-| `MLFLOW_TRACKING_URI` | the deployed MLflow server URL (see [`infra/mlflow/README.md`](../infra/mlflow/README.md)) |
-| `GOOGLE_APPLICATION_CREDENTIALS` | only required if `ASSETS_BUCKET` is set; upload the JSON via the Colab file pane and reference the path |
-| `ASSETS_BUCKET` | optional — if set, the bundle is pushed directly to `gs://${ASSETS_BUCKET}/<run_name>/` and the deployed backend picks it up on next sync |
+| Google Drive auth | Cell 1 prompts via `drive.mount(...)`; accept once per runtime |
+| `REPO_URL` / `REPO_BRANCH` | form fields in cell 2; defaults to `github.com/juan-garassino/deepMaze.git@main` |
+| `DRIVE_BASE` | form field; defaults to `/content/drive/MyDrive/deepMaze`. `mlruns/` + `assets/` get created under it |
+| `AGENTS_TO_RUN` | comma-separated; default `"drqn,dtqn"` trains both in sequence |
 | GPU runtime | Runtime → Change runtime type → GPU. T4 is enough for DRQN; A100 helps DTQN with batch > 32 |
 
 ## Output checklist
 
-After a successful run you should see:
-- MLflow run under experiment `deepmaze` with `eval_success_rate` metric > 0
-- `assets/<RUN_NAME>/config.json` + `model.pt` + `viz/replay.webp` in Colab's file pane
-- Either a downloadable `<RUN_NAME>.zip` (no `ASSETS_BUCKET`) or successful GCS uploads (with bucket)
+After a successful run you should see, in Drive at `${DRIVE_BASE}/`:
+- `mlruns/` — full file-store MLflow experiment with both runs, params, per-episode metrics, eval metrics, logged artifacts
+- `assets/drqn_v1/` and `assets/dtqn_v1/` — each contains `config.json` + `model.pt` + `viz/replay.webp`
+- `eval_success_rate > 0` on both runs is "it works"
+
+## Pulling bundles down + browsing MLflow locally
+
+```bash
+# Copy a bundle to use with the local backend's pretrained dropdown
+rsync -a "<drive>/deepMaze/assets/drqn_v1/" assets/drqn_v1/
+python web/server.py --port 8000
+
+# Browse the MLflow runs
+rsync -a "<drive>/deepMaze/mlruns/" mlruns/
+mlflow ui --backend-store-uri "file://$(pwd)/mlruns"
+```
 
 ## Common pitfalls
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `AssertionError: Set MLFLOW_TRACKING_URI` | form field left blank | paste your tracking URL into the cell 1 form |
-| `OSError: [Errno 28] No space left on device` | Colab's `/tmp` filled by replay frames | lower `MAX_STEPS` or `NUM_EPISODES`, or restart the runtime |
-| `requests.exceptions.ConnectionError` to MLflow | tracking server unreachable from Colab | confirm the URL is HTTPS, public, and not behind IAP yet |
-| GCS `403 PERMISSION_DENIED` on upload | key lacks `roles/storage.objectAdmin` on the bucket | re-grant via `gsutil iam ch` or use a different SA |
-| Notebook hangs in cell 4 | DRQN replay buffer warming up — first 1k steps are slow | wait; or interrupt and restart with smaller `NUM_EPISODES` |
-
-## Security note
-
-**Never paste your `GOOGLE_APPLICATION_CREDENTIALS` JSON into a notebook cell.** Even with cleared outputs, the JSON persists in the `.ipynb` and ends up in version control. Upload the file via the Colab file pane (left sidebar) and reference it by path.
+| `drive.mount` prompts for code every cell | runtime hot-restarted | re-run cell 1 once per fresh runtime |
+| Slow `mlflow.log_metrics` calls | Drive FUSE round-trips | expected; first DRQN run with 3000 episodes ≈ 20 min on T4 |
+| `OSError: [Errno 28] No space left` | Colab's `/tmp` filled by replay frames | lower `MAX_STEPS` or `NUM_EPISODES`, or restart the runtime |
+| Notebook hangs early in cell 6 | DRQN replay buffer warming up — first 1k steps are slow | wait; or interrupt and restart with smaller `NUM_EPISODES` |
+| DTQN OOM on T4 | transformer attention with `MAX_STEPS=300` | drop `MAX_STEPS` to 200, or switch runtime to A100 |
 
 ## Promote a trained model
 
-After the notebook finishes, either:
+After the notebook finishes, the bundles live at `${DRIVE_BASE}/assets/<run_name>/`. To use them with the deployed backend:
 
-- **Manual:** download the zip, unzip into `assets/<name>/`, `git add` + `git push` — the deploy workflow picks it up.
-- **Automated:** run `python flows/promote_flow.py <mlflow-run-id>` from your machine; Prefect downloads the bundle, validates it, and opens a PR. See [`../flows/README.md`](../flows/README.md).
+- **Manual:** download the bundle from Drive, place at `assets/<run_name>/`, `git add` + `git push` — the deploy workflow picks it up.
+- **Automated (Cloud MLflow):** if you also have a Cloud Run MLflow server, log the run there and call `python flows/promote_flow.py <mlflow-run-id>` to open a PR. See [`../flows/README.md`](../flows/README.md).

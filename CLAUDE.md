@@ -171,7 +171,7 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 
 | Surface | What it does | Where |
 |---|---|---|
-| Colab notebook (A) | trains DRQN/DTQN, logs to MLflow, emits `assets/<name>/` bundle | `notebooks/train_agent.ipynb` |
+| Colab notebook (A) | mounts Drive, clones repo, trains DRQN **and** DTQN in sequence, persists MLflow runs + `assets/<name>/` bundles to Drive (no GCP needed) | `notebooks/train_agent.ipynb` |
 | MLflow server (B) | experiment tracking + model registry; Cloud Run + Cloud SQL + GCS | `infra/mlflow/` |
 | Cloud Run backend (C) | slim prod image; GCS asset hot-sync at startup | `Dockerfile.prod` + `infra/cloudrun/service.yaml` |
 | GHA + Slack (E) | OIDC → GAR build/push → Cloud Run deploy + Slack notifications | `.github/workflows/deploy.yml` |
