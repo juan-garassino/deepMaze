@@ -109,3 +109,28 @@ jobs:
           SLACK_MESSAGE: "Commit `${{ github.sha }}` failed deploy. See <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run log>."
           SLACK_COLOR: "danger"
           MSG_MINIMAL: "true"
+
+      # Telegram — single message regardless of outcome (Slack still fires
+      # too; the user uses both). Skipped silently when the token is unset.
+      - name: Detect Telegram secret
+        id: tg_has
+        if: always()
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          if [ -n "${TOKEN}" ]; then
+            echo "secret=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "secret=no"  >> "$GITHUB_OUTPUT"
+            echo "TELEGRAM_BOT_TOKEN not configured — skipping notification."
+          fi
+
+      - name: Telegram notify
+        if: always() && steps.tg_has.outputs.secret == 'yes'
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          status: ${{ job.status }}
+          title: deploy
+          details: ${{ steps.url.outputs.url && format('[Cloud Run URL]({0})', steps.url.outputs.url) || '' }}

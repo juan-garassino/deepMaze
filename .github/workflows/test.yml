@@ -24,3 +24,32 @@ jobs:
         run: ruff check .
       - name: Test
         run: python -m pytest tests/ -q
+
+  # Single Telegram message per workflow run, after the matrix settles.
+  # Skipped silently when the TELEGRAM_BOT_TOKEN secret is absent
+  # (forked-PR workflows have no access to repo secrets).
+  notify:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect Telegram secret
+        id: has
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          if [ -n "${TOKEN}" ]; then
+            echo "secret=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "secret=no"  >> "$GITHUB_OUTPUT"
+            echo "TELEGRAM_BOT_TOKEN not configured — skipping notification."
+          fi
+      - name: Telegram notify
+        if: steps.has.outputs.secret == 'yes'
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          status: ${{ needs.test.result }}
+          title: tests

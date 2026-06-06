@@ -189,6 +189,16 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 Required env / secrets (set in GH repo secrets/vars for deploy; locally via `.env`):
 `GCP_PROJECT_ID`, `GCP_REGION`, `GAR_REPO`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `ASSETS_BUCKET`, `CORS_ORIGINS`, `MLFLOW_TRACKING_URI`, `SLACK_WEBHOOK_URL`, `PREFECT_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS` (local only). Auth on the public Cloud Run service + public MLflow is **out of scope** per the spec; tighten with IAP before any real deploy.
 
+## Telegram notifications (test + deploy workflows)
+
+`.github/workflows/test.yml` and `deploy.yml` send a Telegram message at the end of each run via the composite action at `.github/actions/telegram-notify/`. Skipped silently when the token is absent (PRs from forks, etc.).
+
+Required GitHub secrets:
+- `TELEGRAM_BOT_TOKEN` — from @BotFather (`/newbot` → copy token).
+- `TELEGRAM_CHAT_ID` — your chat id. Get it by messaging your bot once, then `curl https://api.telegram.org/bot<TOKEN>/getUpdates` and reading `message.chat.id`. Or use @userinfobot.
+
+Add both at `https://github.com/juan-garassino/deepMaze/settings/secrets/actions`. The Slack webhook is independent — both fire on deploy when configured.
+
 Reading order: **[`docs/architecture.md`](docs/architecture.md)** for the single-screen wiring → **[`docs/deployment-guide.md`](docs/deployment-guide.md)** for the cold-start runbook → **[`flows/README.md`](flows/README.md)** + **[`infra/README.md`](infra/README.md)** + **[`notebooks/README.md`](notebooks/README.md)** for per-area reference. Original design intent: **[`docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md`](docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md)**.
 
 ## Workspace context
