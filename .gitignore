@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .deepeval/
 maze_rl_runs/
+local_runs/
 *.egg-info/
 .venv/
 .DS_Store
