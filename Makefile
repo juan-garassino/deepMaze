@@ -71,6 +71,31 @@ run:
 	@echo "    logs:  make logs"
 	@echo "    stop:  make stop"
 
+# ---------------------------------------------------------------------------
+# Self-improve: train then hand control to Claude Code (same pattern as
+# 005-products/020-autoresearch). Requires ANTHROPIC_API_KEY.
+# ---------------------------------------------------------------------------
+
+.PHONY: improve
+improve:
+ifndef API_KEY
+	$(error API_KEY is required. Usage: make improve API_KEY=sk-ant-...)
+endif
+	docker run -d \
+		--gpus all \
+		--name $(CONTAINER_NAME)-improve \
+		-e CLAUDE_SELF_IMPROVE=true \
+		-e ANTHROPIC_API_KEY=$(API_KEY) \
+		-e MAX_IMPROVE_ITERS=$${MAX_IMPROVE_ITERS:-5} \
+		-e MAX_IMPROVE_HOURS=$${MAX_IMPROVE_HOURS:-4} \
+		-v $(PWD)/local_runs:/workspace \
+		$(IMAGE_NAME)
+	@echo ""
+	@echo "=== Self-improve container started: $(CONTAINER_NAME)-improve ==="
+	@echo "    logs:  docker logs -f $(CONTAINER_NAME)-improve"
+	@echo "    claude.log inside container: docker exec $(CONTAINER_NAME)-improve cat /app/claude.log"
+	@echo "    stop:  docker stop $(CONTAINER_NAME)-improve && docker rm $(CONTAINER_NAME)-improve"
+
 .PHONY: logs
 logs:
 	docker logs -f $(CONTAINER_NAME)
