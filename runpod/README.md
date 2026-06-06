@@ -13,14 +13,34 @@ Standalone GPU training for deepMaze. Runs the same `train_one` + curriculum log
 | (root) `Makefile` | `make build / push / run / logs / stop` — mirrors the autoresearch pattern. |
 | (root) `scripts/train_runpod.py` | The standalone training driver. All knobs are env vars. |
 
-## Build + push
+## Build + push (GHCR)
 
 ```bash
-make build                       # builds runpod/Dockerfile → deepmaze-train
-make push REGISTRY=garassinoj    # tags + pushes to Docker Hub
+make ghcr-login                  # docker login ghcr.io (paste GitHub PAT with write:packages)
+make push                        # build + push to ghcr.io/juan-garassino/deepmaze-train:latest
 ```
 
-## On RunPod
+First push leaves the package PRIVATE — open https://github.com/users/juan-garassino/packages/container/deepmaze-train/settings and change visibility to **Public** so RunPod can pull without registry-auth.
+
+## Create the pod (runpodctl)
+
+```bash
+# one-time: brew install runpod/runpodctl/runpodctl && runpodctl doctor
+
+make runpod                                   # train-only
+make runpod-improve API_KEY=sk-ant-...        # train + Claude self-improve
+make runpod-list                              # find pod id
+make runpod-get   POD_ID=<id>                 # status, IP, ports
+make runpod-stop  POD_ID=<id>
+make runpod-delete POD_ID=<id>
+
+# Override GPU / disk:
+make runpod GPU_ID="NVIDIA A100 80GB PCIe" VOLUME_GB=100
+```
+
+For pod logs, `runpodctl ssh connect <pod-id>` then on the pod: `tail -f /app/claude.log` (Claude transcript) or `/workspace/improve_log.tsv` (iteration table).
+
+## On RunPod (web UI fallback)
 
 1. **Create a GPU Pod** — T4 enough for DRQN, A100/H100 for DTQN with big sequences.
 2. **Container image:** `garassinoj/deepmaze-train` (whatever you pushed).
