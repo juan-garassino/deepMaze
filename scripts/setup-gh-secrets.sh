@@ -28,6 +28,9 @@ gh variable set ASSETS_BUCKET -R "${REPO}" -b "garassino-ml-artifacts"   && echo
 gh variable set ASSETS_PREFIX -R "${REPO}" -b "deepmaze/"                && echo "  ✓ variable ASSETS_PREFIX = deepmaze/"
 gh secret   set GCP_PROJECT_ID    -R "${REPO}" -b "garassino-ml"         && echo "  ✓ secret   GCP_PROJECT_ID = garassino-ml"
 gh secret   set CLOUD_RUN_SERVICE -R "${REPO}" -b "deepmaze-backend"     && echo "  ✓ secret   CLOUD_RUN_SERVICE = deepmaze-backend"
+# garassino-op's WIF provider — discovered via `gcloud iam workload-identity-pools providers list`
+gh secret   set WIF_PROVIDER -R "${REPO}" -b "projects/634336216563/locations/global/workloadIdentityPools/gh-actions/providers/github" \
+    && echo "  ✓ secret   WIF_PROVIDER = projects/634336216563/.../providers/github"
 
 # Drop the deprecated GAR_REPO (no-op if it doesn't exist).
 if gh secret list -R "${REPO}" 2>/dev/null | awk '{print $1}' | grep -q '^GAR_REPO$'; then
@@ -70,9 +73,8 @@ prompt_set() {
 
 echo "User-supplied values (press Enter to skip any):"
 prompt_set variable CORS_ORIGINS         "comma-separated frontend origins, or '*' for demo"
-prompt_set secret   WIF_PROVIDER         "garassino-op WIF provider path: projects/<num>/locations/global/workloadIdentityPools/gh-actions/providers/github"
-prompt_set secret   WIF_SERVICE_ACCOUNT  "runtime SA email (Terraform output: sa_email)"
-prompt_set secret   CLOUD_RUN_SA_EMAIL   "runtime SA email — same as WIF_SERVICE_ACCOUNT in this setup"
+prompt_set secret   WIF_SERVICE_ACCOUNT  "runtime SA email (Terraform output 'sa_email' — typically deepmaze-backend@garassino-ml.iam.gserviceaccount.com)"
+prompt_set secret   CLOUD_RUN_SA_EMAIL   "runtime SA email — same as WIF_SERVICE_ACCOUNT"
 prompt_set secret   TELEGRAM_BOT_TOKEN   "@BotFather token (optional)"
 prompt_set secret   TELEGRAM_CHAT_ID     "your Telegram chat id (optional)"
 prompt_set secret   SLACK_WEBHOOK_URL    "Slack webhook (optional)"

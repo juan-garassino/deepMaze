@@ -41,8 +41,11 @@ terraform import google_storage_bucket.artifacts garassino-ml-artifacts
 # Then apply with the new tag:
 terraform apply \
   -var "image_tag=$(git rev-parse --short HEAD)" \
-  -var "wif_pool_id=projects/<garassino-op-num>/locations/global/workloadIdentityPools/gh-actions"
+  -var "wif_pool_id=projects/634336216563/locations/global/workloadIdentityPools/gh-actions"
 ```
+
+> The `wif_pool_id` above is the concrete pool already provisioned in `garassino-op` (project number `634336216563`, pool name `gh-actions`). Discoverable on any machine with gcloud access via:
+> `gcloud iam workload-identity-pools list --project=garassino-op --location=global`
 
 Outputs land like:
 
