@@ -19,6 +19,11 @@
 #   make runpod-delete POD_ID=...      delete a pod
 # (Pod logs: ssh into the pod via `runpodctl ssh connect POD_ID`, then
 #  `tail -f /app/claude.log` or `/workspace/improve_log.tsv`.)
+#
+# GitHub repo configuration:
+#   make gh-secrets                    set repo secrets + variables via gh CLI
+#                                      (idempotent; prompts for user-supplied
+#                                      values; pass env vars to skip prompts)
 
 IMAGE_NAME     ?= deepmaze-train
 GH_USERNAME    ?= juan-garassino
@@ -188,3 +193,16 @@ ifndef POD_ID
 	$(error POD_ID is required. Usage: make runpod-delete POD_ID=...)
 endif
 	runpodctl pod delete $(POD_ID)
+
+# ---------------------------------------------------------------------------
+# GitHub repo configuration — set secrets + variables via gh CLI.
+# Requires: gh authed (gh auth status). Idempotent.
+# Pass values via env vars to skip prompts, e.g.:
+#   WIF_PROVIDER=projects/.../providers/github \
+#   WIF_SERVICE_ACCOUNT=deepmaze-backend@garassino-ml.iam.gserviceaccount.com \
+#   make gh-secrets
+# ---------------------------------------------------------------------------
+
+.PHONY: gh-secrets
+gh-secrets:
+	bash scripts/setup-gh-secrets.sh
