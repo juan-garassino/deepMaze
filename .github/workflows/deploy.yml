@@ -79,6 +79,7 @@ jobs:
           IMAGE: ${{ env.IMAGE }}:${{ github.sha }}
           SA_EMAIL: ${{ env.SA_EMAIL }}
           ASSETS_BUCKET: ${{ env.ASSETS_BUCKET }}
+          ASSETS_PREFIX: ${{ vars.ASSETS_PREFIX }}
           GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
           CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
 

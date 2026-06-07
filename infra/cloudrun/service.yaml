@@ -2,7 +2,9 @@
 # Apply via: gcloud run services replace infra/cloudrun/service.yaml --region=$GCP_REGION
 # Or render + apply in CI via deploy.yml.
 # envsubst variables (must be set in deploy.yml or local shell):
-#   IMAGE, SA_EMAIL, ASSETS_BUCKET, GCP_PROJECT_ID, CORS_ORIGINS
+#   IMAGE, SA_EMAIL, ASSETS_BUCKET, ASSETS_PREFIX, GCP_PROJECT_ID, CORS_ORIGINS
+# ASSETS_BUCKET is the shared `garassino-ml-artifacts` bucket; ASSETS_PREFIX
+# (e.g. `deepmaze/`) selects the per-project subpath sync_assets.py walks.
 # If CORS_ORIGINS is empty, server.py defaults to `*` (dev-only).
 apiVersion: serving.knative.dev/v1
 kind: Service
@@ -36,6 +38,8 @@ spec:
               value: ${CORS_ORIGINS}
             - name: ASSETS_BUCKET
               value: ${ASSETS_BUCKET}
+            - name: ASSETS_PREFIX
+              value: ${ASSETS_PREFIX}
             - name: GCP_PROJECT_ID
               value: ${GCP_PROJECT_ID}
             - name: OTEL_SERVICE_NAME

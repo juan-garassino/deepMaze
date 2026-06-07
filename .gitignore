@@ -7,3 +7,9 @@ local_runs/
 *.egg-info/
 .venv/
 .DS_Store
+
+# Terraform local state — backend is GCS
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup

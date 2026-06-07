@@ -87,6 +87,18 @@ python scripts/train_runpod.py
 
 Runs a nano curriculum on an 8×8 maze in ~2 min on CPU — proves the pipeline works end-to-end before you pay for a GPU.
 
+## Pushing trained bundles back to GCS
+
+The container writes everything to `/workspace/` but does **not** auto-sync to GCS today. After a successful pod run, the operator copies the bundle into the shared `garassino-ml-artifacts/deepmaze/` prefix from their laptop:
+
+```bash
+# After `runpodctl ssh connect <pod-id>` proves the bundle is on /workspace:
+runpodctl send <pod-id>:/workspace/assets/<run_name> ./assets/<run_name>
+gsutil -m cp -r ./assets/<run_name> gs://garassino-ml-artifacts/deepmaze/<run_name>
+```
+
+Then restart the Cloud Run revision so `sync_assets.py` pulls the new bundle on the next instance start. Future work: bake `gcloud` + a `gsutil cp` step into `runpod/entrypoint.sh` so the container pushes its own bundle and the operator's laptop drops out of the loop.
+
 ## Local Docker dry-run (needs NVIDIA + nvidia-docker)
 
 ```bash

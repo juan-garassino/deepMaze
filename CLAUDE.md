@@ -190,7 +190,7 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 | OTEL / Cloud Trace (F) | per-request spans from FastAPI | `web/otel.py`; see `docs/observability.md` |
 
 Required env / secrets for deploy.yml (set in GH repo secrets/vars; locally via `.env`):
-- **GCP (WIF, no SA JSON keys per workspace policy):** `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `GCP_PROJECT_ID`, `GCP_REGION` (vars), `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `ASSETS_BUCKET` (vars), `CORS_ORIGINS` (vars).
+- **GCP (WIF, no SA JSON keys per workspace policy):** `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `GCP_PROJECT_ID`, `GCP_REGION` (vars), `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `ASSETS_BUCKET` (vars; the shared `garassino-ml-artifacts`), `ASSETS_PREFIX` (vars; e.g. `deepmaze/`), `CORS_ORIGINS` (vars).
 - **GHCR:** uses the built-in `GITHUB_TOKEN` (no extra secret). The image must be public for Cloud Run to pull without registry-auth — flip visibility at https://github.com/users/juan-garassino/packages/container/deepmaze-backend/settings.
 - **MLflow:** none for Cloud Run — file:// tracking is per-host now.
 - **Telegram (optional):** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (see § "Telegram notifications" below).

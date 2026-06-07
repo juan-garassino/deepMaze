@@ -19,15 +19,15 @@ Use `MLFLOW_TRACKING_URI=http://localhost:5000` in the notebook and the backend.
 Set the required env then run the deploy script:
 
 ```bash
-export GCP_PROJECT_ID=your-proj
-export GCP_REGION=us-central1
-export GAR_REPO=deepmaze
-export MLFLOW_BUCKET=deepmaze-mlflow-artifacts
-export SQL_INSTANCE=deepmaze-mlflow-sql
+export GCP_PROJECT_ID=garassino-ml          # post-2026-06-07 target
+export GCP_REGION=europe-west1
+export GAR_REPO=mlflow                      # only if you really revive the GAR path
+export MLFLOW_BUCKET=garassino-ml-artifacts # shared bucket; subpaths per project
+export SQL_INSTANCE=deepmaze-mlflow-sql     # Cloud SQL — excluded by workspace policy
 export SQL_PASSWORD='strong-secret'
 export MLFLOW_SERVICE=mlflow-server
 
-bash infra/mlflow/deploy.sh
+bash infra/mlflow/deploy.sh --force          # --force required — script is guarded
 ```
 
 The script is idempotent: it creates only what doesn't already exist (Artifact Registry repo, GCS bucket, Cloud SQL instance + db + user, service account + bindings), builds + pushes the image, and deploys the Cloud Run revision. It prints the public URL at the end — that's your `MLFLOW_TRACKING_URI`.

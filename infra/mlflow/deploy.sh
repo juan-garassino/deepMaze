@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# REFERENCE ONLY — see infra/mlflow/README.md.
+# Under the post-2026-06-07 architecture, MLflow runs as a file:// store
+# everywhere (Drive on Colab, /workspace/mlruns on RunPod, ./local_runs/mlruns
+# locally). This script would recreate the deprecated Cloud Run + Cloud SQL
+# + GAR stack. Guarded so it can't be run accidentally.
+if [ "${1:-}" != "--force" ]; then
+    echo "REFERENCE ONLY: this script provisions the pre-2026-06-07 MLflow stack"
+    echo "(Cloud Run + Cloud SQL + GAR). Cloud SQL is excluded by workspace policy."
+    echo "Pass --force to acknowledge and run anyway."
+    exit 1
+fi
+shift  # drop --force so downstream gcloud calls don't see it
 # Provision + deploy MLflow tracking server on Cloud Run.
 # Idempotent — safe to re-run.
 #
