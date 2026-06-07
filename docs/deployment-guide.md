@@ -1,5 +1,7 @@
 # Deployment guide
 
+> **Pre-migration doc (2026-06-07):** GCP target is now **`garassino-ml`** / `europe-west1` in show-and-destroy mode under €25/mo workspace cap. Region/project references below describe pre-migration state. Canonical config in workspace root `CLAUDE.md` § "GCP architecture".
+
 Cold-start runbook: from an empty GCP project to a deployed inference service + MLflow + Slack-wired CI/CD. Steps are sequential; each one is idempotent.
 
 ## 0. Prerequisites

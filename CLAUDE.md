@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **GCP migration note (2026-06-07):** Cloud target: **`garassino-ml`** / `europe-west1` (show-and-destroy under €25/mo workspace cap). MLflow / persistent state goes to external Neon free tier — no Cloud SQL. See workspace root `CLAUDE.md` § "GCP architecture".
+
 ## What this is
 
 A maze-based reinforcement learning playground with a full visualization stack — five agents (Q-learning / DQN / PPO / **DRQN** / **DTQN**, the latter two memory-equipped), sprite-based replay (WebP/GIF/MP4), training-curve plots, policy + visitation + behavioral-rollout heatmaps, and a FastAPI + vanilla-JS browser viewer. Supports live training **and** pretrained-model inference over the same SSE pipeline.
@@ -180,14 +182,22 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 | Surface | What it does | Where |
 |---|---|---|
 | Colab notebook (A) | mounts Drive, clones repo, trains DRQN **and** DTQN in sequence, persists MLflow runs + `assets/<name>/` bundles to Drive (no GCP needed) | `notebooks/train_agent.ipynb` |
-| MLflow server (B) | experiment tracking + model registry; Cloud Run + Cloud SQL + GCS | `infra/mlflow/` |
-| Cloud Run backend (C) | slim prod image; GCS asset hot-sync at startup | `Dockerfile.prod` + `infra/cloudrun/service.yaml` |
-| GHA + Slack (E) | OIDC → GAR build/push → Cloud Run deploy + Slack notifications | `.github/workflows/deploy.yml` |
+| MLflow server (B) | experiment tracking + model registry — file:// stores everywhere (Drive on Colab, `/workspace/mlruns/` on RunPod, `./local_runs/mlruns/` locally). `infra/mlflow/` keeps the old Cloud Run + Cloud SQL recipe as reference but **is not used** under the post-2026-06-07 architecture (Cloud SQL is excluded; if revived, swap to Neon). | notebook + `scripts/train_runpod.py` |
+| RunPod training (D) | GPU container; standalone training via env vars; optional Claude self-improve loop | `runpod/Dockerfile` + `scripts/train_runpod.py` |
+| Cloud Run backend (C) | slim prod inference image; GCS asset hot-sync at startup. Image lives on **GHCR** (`ghcr.io/juan-garassino/deepmaze-backend`) per workspace policy — GAR is reserved for career-navigator. | `Dockerfile.prod` + `infra/cloudrun/service.yaml` |
+| GHA + Slack/Telegram (E) | OIDC (WIF via `garassino-op`) → GHCR build/push → Cloud Run deploy + Slack + Telegram notifications | `.github/workflows/deploy.yml` |
 | Prefect flows (D) | retrain (watch MLflow), promote (run_id → PR or GCS), daily smoke test | `flows/` |
 | OTEL / Cloud Trace (F) | per-request spans from FastAPI | `web/otel.py`; see `docs/observability.md` |
 
-Required env / secrets (set in GH repo secrets/vars for deploy; locally via `.env`):
-`GCP_PROJECT_ID`, `GCP_REGION`, `GAR_REPO`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `ASSETS_BUCKET`, `CORS_ORIGINS`, `MLFLOW_TRACKING_URI`, `SLACK_WEBHOOK_URL`, `PREFECT_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS` (local only). Auth on the public Cloud Run service + public MLflow is **out of scope** per the spec; tighten with IAP before any real deploy.
+Required env / secrets for deploy.yml (set in GH repo secrets/vars; locally via `.env`):
+- **GCP (WIF, no SA JSON keys per workspace policy):** `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `GCP_PROJECT_ID`, `GCP_REGION` (vars), `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `ASSETS_BUCKET` (vars), `CORS_ORIGINS` (vars).
+- **GHCR:** uses the built-in `GITHUB_TOKEN` (no extra secret). The image must be public for Cloud Run to pull without registry-auth — flip visibility at https://github.com/users/juan-garassino/packages/container/deepmaze-backend/settings.
+- **MLflow:** none for Cloud Run — file:// tracking is per-host now.
+- **Telegram (optional):** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (see § "Telegram notifications" below).
+- **Slack (optional):** `SLACK_WEBHOOK_URL`.
+- **Prefect:** `PREFECT_API_KEY`. **Local-only:** `GOOGLE_APPLICATION_CREDENTIALS`.
+
+`GAR_REPO` is no longer required (was for the old GAR-backed image path; deepMaze now uses GHCR). Auth on the public Cloud Run service is **out of scope** per the spec; tighten with IAP before any real deploy.
 
 ## Telegram notifications (test + deploy workflows)
 

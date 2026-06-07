@@ -4,7 +4,7 @@
 #
 # Required env (set in .env or your shell):
 #   GCP_PROJECT_ID    — gcloud project
-#   GCP_REGION        — e.g. us-central1
+#   GCP_REGION        — e.g. europe-west1
 #   GAR_REPO          — Artifact Registry repo name (will be created)
 #   MLFLOW_BUCKET     — GCS bucket for artifacts (will be created)
 #   SQL_INSTANCE      — Cloud SQL Postgres instance name (will be created)

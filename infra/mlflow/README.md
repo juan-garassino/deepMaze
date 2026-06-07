@@ -1,4 +1,6 @@
-# MLflow tracking server (B)
+# MLflow tracking server (B) — REFERENCE ONLY
+
+> ⚠️ **This folder is not used by the live deepMaze pipeline.** Under the post-2026-06-07 architecture (`garassino-ml` / €25/mo cap / no Cloud SQL), MLflow is **file://** everywhere — Drive on Colab, `/workspace/mlruns/` on RunPod, `./local_runs/mlruns/` locally. The Cloud Run + Cloud SQL + GCS recipe below is kept as **prior art** for the day the project needs a long-lived tracking server again; if so, swap Cloud SQL for Neon free tier per workspace policy. The `deploy.sh` here is **not** wired into any GitHub Actions workflow.
 
 Two deploy modes: **local dev** (Docker) and **GCP** (Cloud Run + Cloud SQL + GCS).
 
