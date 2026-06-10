@@ -86,7 +86,9 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
             action = agent.move(state)
             qv = agent.q_values(state) if emit and emit_q_values else None
             next_state, reward, done, _ = env.step(action)
-            agent.update(state, action, reward, next_state, done)
+            truncated = (not done) and (step == max_steps - 1)
+            agent.update(state, action, reward, next_state, done,
+                         truncated=truncated)
             total += float(reward)
             length += 1
             if emit:

@@ -83,7 +83,7 @@ class CNNActorCritic(nn.Module):
         if x.dim() == 2:
             x = encode_grid_batch(x.cpu().numpy(), self.h, self.w).to(x.device)
         z = self.trunk(x)
-        return torch.softmax(self.actor(z), dim=-1), self.critic(z)
+        return self.actor(z), self.critic(z)  # raw logits
 
 
 class MLPActorCritic(nn.Module):
@@ -98,4 +98,4 @@ class MLPActorCritic(nn.Module):
 
     def forward(self, x):
         h = self.shared(x)
-        return torch.softmax(self.actor(h), dim=-1), self.critic(h)
+        return self.actor(h), self.critic(h)  # raw logits

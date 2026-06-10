@@ -204,7 +204,7 @@ class DTQNAgent(BaseAgent):
         self._last_action = a
         return a
 
-    def update(self, state, action, reward, next_state, done):
+    def update(self, state, action, reward, next_state, done, truncated=False):
         self.buf.add_step(state, action, reward, next_state, done)
         self._step += 1
         if done:

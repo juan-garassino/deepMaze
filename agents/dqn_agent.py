@@ -53,7 +53,7 @@ class DQNAgent(BaseAgent):
             q = self.model(self._to_tensor(state))
         return int(q.argmax(dim=1).item())
 
-    def update(self, state, action, reward, next_state, done):
+    def update(self, state, action, reward, next_state, done, truncated=False):
         self.memory.push(state, action, reward, next_state, done)
         self._step += 1
         if len(self.memory) >= self.batch_size:

@@ -41,7 +41,10 @@ class BaseAgent(ABC):
         ...
 
     @abstractmethod
-    def update(self, state, action, reward, next_state, done):
+    def update(self, state, action, reward, next_state, done, truncated=False):
+        """One environment transition. `truncated=True` marks a time-limit
+        cut (episode did NOT end in the MDP): value targets still bootstrap,
+        but multi-step credit (e.g. PPO's GAE carry) must not cross it."""
         ...
 
     def q_values(self, state):

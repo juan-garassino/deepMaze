@@ -23,7 +23,7 @@ class QAgent(BaseAgent):
             return np.random.randint(0, self.action_size)
         return int(np.argmax(self.Q[self._key(state)]))
 
-    def update(self, state, action, reward, next_state, done):
+    def update(self, state, action, reward, next_state, done, truncated=False):
         k, nk = self._key(state), self._key(next_state)
         current_q = self.Q[k][action]
         next_q = 0.0 if done else float(np.max(self.Q[nk]))
