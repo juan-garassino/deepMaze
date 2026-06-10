@@ -123,7 +123,8 @@ class DTQNAgent(BaseAgent):
                  exploration_rate=1.0, exploration_decay=0.995,
                  min_epsilon=0.05, batch_size=8, seq_len=16, burn_in=4,
                  target_sync=100, buffer_capacity=200,
-                 dim=128, heads=4, layers=2, max_ctx=64, aux_dim=0):
+                 dim=128, heads=4, layers=2, max_ctx=64, aux_dim=0,
+                 learn_every=1):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.h, self.w = grid_shape
@@ -136,6 +137,7 @@ class DTQNAgent(BaseAgent):
         self.seq_len = seq_len
         self.burn_in = burn_in
         self.target_sync = target_sync
+        self.learn_every = max(1, int(learn_every))
         self.max_ctx = max_ctx
         self._step = 0
 
@@ -205,7 +207,8 @@ class DTQNAgent(BaseAgent):
         self._step += 1
         if done:
             self._clear_context()  # episode already committed by add_step
-        if len(self.buf) >= max(2, self.batch_size):
+        if (len(self.buf) >= max(2, self.batch_size)
+                and self._step % self.learn_every == 0):
             self._learn()
 
     def _learn(self):

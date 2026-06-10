@@ -24,6 +24,8 @@ Env vars (all optional — defaults shown):
     RANDOM_START=true BUMP_PENALTY=-0.01
     AUX_FEATURES=true REWARD_SHAPING=true
     EVAL_EVERY=0 ADVANCE_THRESHOLD=0 STAGE_MAX_REPEATS=1
+    NANO=false      # true = tiny nets + learn_every=4 + 3-episode evals
+                    # (CPU smoke-test; `make local` sets it)
     # EVAL_EVERY 0 = num_episodes//10. ADVANCE_THRESHOLD gates curriculum
     # promotion on periodic-eval success rate (0 disables the gate).
     EXPLORATION_DECAY=0 BUFFER_CAPACITY=0   # 0 = repo default; decay is
@@ -109,6 +111,18 @@ EVAL_EVERY        = _env("EVAL_EVERY", 0, int)       # 0 = num_episodes//10
 ADVANCE_THRESHOLD = _env("ADVANCE_THRESHOLD", 0.0, float)  # 0 = gate off
 STAGE_MAX_REPEATS = _env("STAGE_MAX_REPEATS", 1, int)
 
+# NANO=true → tiny architectures + sparse gradient steps + small evals so a
+# full pipeline cycle finishes in minutes on an old CPU. Smoke-test only —
+# verifies the pipeline, NOT convergence.
+NANO = _env("NANO", False, bool)
+_NANO_ARCH = {
+    "drqn": dict(enc_dim=16, lstm_hidden=32, action_emb_dim=4,
+                 batch_size=4, seq_len=4, burn_in=1, learn_every=4),
+    "dtqn": dict(dim=32, heads=2, layers=1, max_ctx=16,
+                 batch_size=4, seq_len=4, burn_in=1, learn_every=4),
+    "dqn":  dict(batch_size=16),
+}
+
 # 0/0.0 = use repo defaults. Decay is per EPISODE (default 0.995); the old
 # 0.999995 per-step compensation constant is gone — agents no longer decay
 # inside update(). BUFFER_CAPACITY is in EPISODES for drqn/dtqn.
@@ -140,7 +154,10 @@ def _agent_overrides(agent_type: str) -> dict:
     cand = {"exploration_decay": EXPLORATION_DECAY}
     if agent_type in ("drqn", "dtqn", "dqn"):
         cand["buffer_capacity"] = BUFFER_CAPACITY
-    return {k: v for k, v in cand.items() if v}
+    out = {k: v for k, v in cand.items() if v}
+    if NANO:
+        out.update(_NANO_ARCH.get(agent_type, {}))
+    return out
 
 
 def _module_of(agent):
@@ -261,6 +278,7 @@ def train_stage(agent_type: str, run_name: str,
                               for k, v in module.state_dict().items()}
 
     eval_every = EVAL_EVERY or max(50, num_episodes // 10)
+    eval_n = 3 if NANO else 10
 
     with mlflow.start_run(run_name=run_name) as run:
         mlflow.log_params(dict(
@@ -278,9 +296,10 @@ def train_stage(agent_type: str, run_name: str,
         train_agent(env, agent, num_episodes=num_episodes, max_steps=max_steps, bus=bus,
                     random_start=RANDOM_START,
                     regenerate_every=(REGENERATE_EVERY or None),
-                    eval_every=eval_every, eval_episodes=10, on_eval=on_eval)
+                    eval_every=eval_every, eval_episodes=eval_n, on_eval=on_eval)
         mean_r, mean_l, succ = evaluate_agent(
-            env, agent, num_episodes=EVAL_EPISODES, max_steps=max_steps,
+            env, agent, num_episodes=(5 if NANO else EVAL_EPISODES),
+            max_steps=max_steps,
             regenerate_each=EVAL_REGENERATE,
         )
         mlflow.log_metrics({

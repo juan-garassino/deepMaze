@@ -68,7 +68,7 @@ class DRQNAgent(BaseAgent):
                  exploration_decay=0.995, min_epsilon=0.05,
                  batch_size=8, seq_len=8, burn_in=4, target_sync=100,
                  buffer_capacity=200, lstm_hidden=128, enc_dim=64,
-                 action_emb_dim=16, aux_dim=0):
+                 action_emb_dim=16, aux_dim=0, learn_every=1):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.h, self.w = grid_shape
@@ -81,6 +81,7 @@ class DRQNAgent(BaseAgent):
         self.seq_len = seq_len
         self.burn_in = burn_in
         self.target_sync = target_sync
+        self.learn_every = max(1, int(learn_every))
         self._step = 0
 
         self.model = DRQN(self.h, self.w, action_size, enc_dim, lstm_hidden,
@@ -138,7 +139,8 @@ class DRQNAgent(BaseAgent):
         if done:
             self._hidden = None
             self._last_action = NO_ACTION
-        if len(self.buf) >= max(2, self.batch_size):
+        if (len(self.buf) >= max(2, self.batch_size)
+                and self._step % self.learn_every == 0):
             self._learn()
 
     def _learn(self):

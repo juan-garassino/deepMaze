@@ -100,3 +100,15 @@ def test_memory_agents_learn_with_masked_loss():
         train_agent(env, agent, num_episodes=6, max_steps=6)
         assert agent.last_loss is not None and np.isfinite(agent.last_loss), \
             agent_type
+
+
+def test_learn_every_gates_gradient_steps():
+    env = MazeEnvironment(**_TINY)
+    kw = dict(_DRQN_KW, learn_every=1000)  # never reached in 20 steps
+    agent = create_agent("drqn", env, **kw)
+    train_agent(env, agent, num_episodes=4, max_steps=5)
+    assert agent.last_loss is None
+    kw = dict(_DRQN_KW, learn_every=1)
+    agent = create_agent("drqn", env, **kw)
+    train_agent(env, agent, num_episodes=4, max_steps=5)
+    assert agent.last_loss is not None

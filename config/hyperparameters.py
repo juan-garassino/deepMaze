@@ -57,8 +57,11 @@ class DRQNHP:
     seq_len: int = 8
     burn_in: int = 4
     target_sync: int = 100
+    learn_every: int = 1  # gradient step every N env steps
     buffer_capacity: int = 200
     lstm_hidden: int = 128
+    enc_dim: int = 64        # GridAttnEncoder output dim
+    action_emb_dim: int = 16
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,7 @@ class DTQNHP:
     seq_len: int = 16
     burn_in: int = 4
     target_sync: int = 100
+    learn_every: int = 1  # gradient step every N env steps
     buffer_capacity: int = 200
     dim: int = 128
     heads: int = 4

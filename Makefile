@@ -53,10 +53,10 @@ test:
 local:
 	OUTPUT_BASE=$(PWD)/local_runs \
 	AGENTS_TO_RUN=drqn \
-	CURRICULUM="8,8,1,200,100" \
-	EXPLORATION_DECAY=0.99 \
-	BUFFER_CAPACITY=2000 \
+	CURRICULUM="8,8,1,120,60" \
 	PARTIAL=2 \
+	NANO=true \
+	SHOWCASE_EVERY=60 \
 	python scripts/train_runpod.py
 
 # ---------------------------------------------------------------------------
