@@ -199,8 +199,11 @@ class DTQNAgent(BaseAgent):
 
         q_seq = self.model(obs_t, pa_t, key_padding_mask=kpm)
         with torch.no_grad():
+            # Double DQN: online net selects, target net evaluates.
+            qn_on = self.model(nobs_t, npa_t, key_padding_mask=kpm)
+            next_a = qn_on.argmax(dim=-1, keepdim=True)
             qt_seq = self.target_model(nobs_t, npa_t, key_padding_mask=kpm)
-            max_next = qt_seq.max(dim=-1).values
+            max_next = qt_seq.gather(2, next_a).squeeze(-1)
 
         # Train only on positions after burn-in.
         bi = min(self.burn_in, T - 1)

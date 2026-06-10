@@ -134,12 +134,17 @@ class DRQNAgent(BaseAgent):
         bi = min(self.burn_in, T - 1)
         with torch.no_grad():
             _, hid = self.model(obs_t[:, :bi], pa_t[:, :bi], None)
+            _, hid_nxt = self.model(nobs_t[:, :bi], npa_t[:, :bi], None)
             _, hid_tgt = self.target_model(nobs_t[:, :bi], npa_t[:, :bi], None)
 
         q_seq, _ = self.model(obs_t[:, bi:], pa_t[:, bi:], hid)
         with torch.no_grad():
+            # Double DQN: online net (with its own next-obs hidden) selects,
+            # target net evaluates.
+            qn_on, _ = self.model(nobs_t[:, bi:], npa_t[:, bi:], hid_nxt)
+            next_a = qn_on.argmax(dim=-1, keepdim=True)
             qt_seq, _ = self.target_model(nobs_t[:, bi:], npa_t[:, bi:], hid_tgt)
-            max_next = qt_seq.max(dim=-1).values
+            max_next = qt_seq.gather(2, next_a).squeeze(-1)
 
         a_use = act_t[:, bi:]
         r_use = rew_t[:, bi:]

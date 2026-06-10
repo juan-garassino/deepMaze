@@ -66,12 +66,15 @@ class DQNAgent(BaseAgent):
 
             current_q = self.model(s).gather(1, a)
             with torch.no_grad():
-                next_q = self.target_model(ns).max(1, keepdim=True)[0]
+                # Double DQN: online net selects, target net evaluates.
+                next_a = self.model(ns).argmax(1, keepdim=True)
+                next_q = self.target_model(ns).gather(1, next_a)
                 target = r + (1.0 - d) * self.gamma * next_q
 
-            loss = nn.functional.mse_loss(current_q, target)
+            loss = nn.functional.smooth_l1_loss(current_q, target)
             self.optimizer.zero_grad()
             loss.backward()
+            nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             self.last_loss = float(loss.item())
 

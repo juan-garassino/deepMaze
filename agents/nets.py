@@ -16,17 +16,18 @@ import torch.nn as nn
 VOCAB = 6
 
 
+def grid_onehot(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
+    """`x`: (N, h*w) or (N, h, w) tensor of integer cell labels, any numeric
+    dtype, any device. Returns (N, VOCAB, h, w) float32 one-hot ON THE SAME
+    DEVICE — no CPU/numpy round trip per forward."""
+    x = x.reshape(-1, h, w).long().clamp(0, VOCAB - 1)
+    return torch.nn.functional.one_hot(x, VOCAB).permute(0, 3, 1, 2).float()
+
+
 def encode_grid_batch(states: np.ndarray, h: int, w: int) -> torch.Tensor:
-    """`states` shape (N, h*w) or (N, h, w) of integer cell labels.
-    Returns float tensor (N, VOCAB, h, w) one-hot encoded."""
-    x = np.asarray(states)
-    if x.ndim == 2 and x.shape[1] == h * w:
-        x = x.reshape(-1, h, w)
-    n = x.shape[0]
-    flat = np.clip(x, 0, VOCAB - 1).astype(np.int64).reshape(n, -1)
-    onehot = np.zeros((n, flat.shape[1], VOCAB), dtype=np.float32)
-    onehot[np.arange(n)[:, None], np.arange(flat.shape[1])[None, :], flat] = 1.0
-    return torch.from_numpy(onehot.reshape(n, h, w, VOCAB).transpose(0, 3, 1, 2))
+    """Numpy wrapper around grid_onehot (kept for non-tensor callers)."""
+    return grid_onehot(torch.from_numpy(np.asarray(states).astype(np.int64)),
+                       h, w)
 
 
 class MLPHead(nn.Module):
@@ -60,7 +61,7 @@ class CNNHead(nn.Module):
     def forward(self, x):
         # x: flattened ints of shape (N, h*w) or already a 4-D float tensor.
         if x.dim() == 2:
-            x = encode_grid_batch(x.cpu().numpy(), self.h, self.w).to(x.device)
+            x = grid_onehot(x, self.h, self.w)
         return self.head(self.body(x))
 
 
@@ -81,7 +82,7 @@ class CNNActorCritic(nn.Module):
 
     def forward(self, x):
         if x.dim() == 2:
-            x = encode_grid_batch(x.cpu().numpy(), self.h, self.w).to(x.device)
+            x = grid_onehot(x, self.h, self.w)
         z = self.trunk(x)
         return self.actor(z), self.critic(z)  # raw logits
 

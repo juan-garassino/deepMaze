@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from nets import VOCAB, encode_grid_batch
+from nets import VOCAB, grid_onehot
 
 
 class GridAttnEncoder(nn.Module):
@@ -38,8 +38,7 @@ class GridAttnEncoder(nn.Module):
         """x: (B, h, w) int labels OR (B, VOCAB, h, w) one-hot float.
         Returns (B, dim)."""
         if x.dim() == 3:
-            x = encode_grid_batch(x.detach().cpu().numpy(),
-                                  self.h, self.w).to(x.device)
+            x = grid_onehot(x, self.h, self.w)
         B = x.shape[0]
         z = self.conv(x)                              # (B, dim, h, w)
         z = z.flatten(2).transpose(1, 2)              # (B, h*w, dim)
