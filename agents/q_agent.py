@@ -30,7 +30,6 @@ class QAgent(BaseAgent):
         td = reward + self.gamma * next_q - current_q
         self.Q[k][action] = current_q + self.lr * td
         self.last_loss = float(td * td)
-        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
 
     def q_values(self, state):
         return self.Q[self._key(state)].copy()

@@ -78,8 +78,6 @@ class DQNAgent(BaseAgent):
             if self._step % self.target_sync == 0:
                 self.target_model.load_state_dict(self.model.state_dict())
 
-        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
-
     def q_values(self, state):
         with torch.no_grad():
             return self.model(self._to_tensor(state)).cpu().numpy().flatten()

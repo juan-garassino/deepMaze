@@ -20,7 +20,16 @@ def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
     state_size = int(np.prod(obs_shape))
     action_size = env.action_size
     grid_shape = obs_shape if len(obs_shape) == 2 else None
-    hp = {**defaults_for(agent_type), **{k: v for k, v in kwargs.items() if v is not None}}
+    defaults = defaults_for(agent_type)
+    overrides = {k: v for k, v in kwargs.items() if v is not None}
+    dropped = set(overrides) - set(defaults)
+    if dropped:
+        # Surfaces pass one override dict for every agent type; keys the
+        # target agent doesn't know (e.g. exploration_decay for PPO) are
+        # dropped instead of exploding in __init__.
+        print(f"[create_agent] {agent_type}: ignoring overrides {sorted(dropped)}")
+        overrides = {k: v for k, v in overrides.items() if k in defaults}
+    hp = {**defaults, **overrides}
     if agent_type == "q":
         return QAgent(action_size=action_size, **hp)
     if agent_type == "dqn":
@@ -105,6 +114,10 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
             if policy_snapshot_every and (episode % policy_snapshot_every == 0):
                 bus.publish(PolicyEvent(episode=episode,
                                         snapshot=agent.policy_snapshot()))
+        # Decay schedules tick per EPISODE (after the event so the logged
+        # epsilon is the value actually used during this episode).
+        if hasattr(agent, "on_episode_end"):
+            agent.on_episode_end()
 
     if hasattr(agent, "flush"):
         agent.flush()

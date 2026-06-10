@@ -165,8 +165,6 @@ class DRQNAgent(BaseAgent):
             self._last_action = NO_ACTION
         if len(self.buf) >= max(2, self.batch_size):
             self._learn()
-        self.epsilon = max(self.min_epsilon,
-                           self.epsilon * self.epsilon_decay)
 
     def _learn(self):
         obs, pa, act, rew, nobs, dn = self.buf.sample(

@@ -18,7 +18,8 @@ class PPOAgent(BaseAgent):
     def __init__(self, state_size, action_size, learning_rate=3e-4,
                  discount_factor=0.99, clip_eps=0.2, value_coef=0.5,
                  entropy_coef=0.01, n_steps=256, epochs=4, minibatches=4,
-                 gae_lambda=0.95, net: str = "mlp", grid_shape=None):
+                 gae_lambda=0.95, net: str = "mlp", grid_shape=None,
+                 **_ignored):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.state_size = state_size

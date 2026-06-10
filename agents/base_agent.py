@@ -20,6 +20,17 @@ class BaseAgent(ABC):
             self._saved_epsilon = None
         self.deterministic = flag
 
+    def on_episode_end(self) -> None:
+        """Called once per training episode by train_agent, after the step
+        loop. Default: decay epsilon. No-op for agents without an epsilon
+        schedule (PPO) and while deterministic (mid-run eval)."""
+        if self.deterministic:
+            return
+        decay = getattr(self, "epsilon_decay", None)
+        if decay is not None and hasattr(self, "epsilon"):
+            self.epsilon = max(getattr(self, "min_epsilon", 0.0),
+                               self.epsilon * decay)
+
     def q_values_batch(self, states):
         """Vectorised q_values. Default: Python loop. Net agents override."""
         import numpy as np

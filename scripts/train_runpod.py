@@ -98,8 +98,11 @@ EVAL_EPISODES    = _env("EVAL_EPISODES", 50, int)
 RANDOM_START     = _env("RANDOM_START", True, bool)
 BUMP_PENALTY     = _env("BUMP_PENALTY", -0.01, float)
 
-EXPLORATION_DECAY = _env("EXPLORATION_DECAY", 0.999995, float)
-BUFFER_CAPACITY   = _env("BUFFER_CAPACITY", 50000, int)
+# 0/0.0 = use repo defaults. Decay is per EPISODE (default 0.995); the old
+# 0.999995 per-step compensation constant is gone — agents no longer decay
+# inside update(). BUFFER_CAPACITY is in EPISODES for drqn/dtqn.
+EXPLORATION_DECAY = _env("EXPLORATION_DECAY", 0.0, float)
+BUFFER_CAPACITY   = _env("BUFFER_CAPACITY", 0, int)
 
 PRINT_EVERY     = _env("PRINT_EVERY", 50, int)
 SHOWCASE_EVERY  = _env("SHOWCASE_EVERY", 500, int)

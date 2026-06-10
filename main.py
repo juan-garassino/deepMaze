@@ -59,6 +59,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--eval_episodes", type=int, default=50)
     p.add_argument("--learning_rate", type=float, default=None)
     p.add_argument("--discount_factor", type=float, default=0.99)
+    p.add_argument("--exploration_decay", type=float, default=None,
+                   help="Per-EPISODE epsilon multiplier (default 0.995 → "
+                        "floor ~ep 600/920; use 0.998 for 3000+ episode runs).")
     p.add_argument("--image_path", type=str, default=None,
                    help="Folder containing sprite sheet PNGs (e.g. sprites.png). "
                         "If omitted, placeholder colored tiles are used.")
@@ -132,6 +135,8 @@ def run(args):
         agent_kw["learning_rate"] = args.learning_rate
     if args.net is not None:
         agent_kw["net"] = args.net
+    if args.exploration_decay is not None:
+        agent_kw["exploration_decay"] = args.exploration_decay
     agent = create_agent(args.agent_type, env, **agent_kw)
     if args.resume:
         _resume_agent(agent, args.resume, mgr)
