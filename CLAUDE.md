@@ -25,10 +25,12 @@ deepMaze/
 ├── tests/        pytest suite
 ├── utils/        manager.py + viz_events.py + visualizations.py + replay_buffer.py
 ├── web/          FastAPI server + static/ + otel.py (Cloud Trace instrumentation)
-├── notebooks/    train_agent.ipynb — Colab DRQN/DTQN trainer → MLflow + assets bundle
+├── notebooks/    train_agent.ipynb — dual-mode (Colab/local) DRQN/DTQN trainer + curriculum cell
 ├── flows/        Prefect flows — retrain / promote / smoke-test
-├── infra/        mlflow/ (Cloud Run + Cloud SQL + GCS) · cloudrun/service.yaml · prefect/
-├── docker/       entrypoint.sh (dev) + entrypoint.prod.sh (GCS asset sync + gunicorn)
+├── runpod/       Dockerfile + entrypoint + program.md (autonomous Claude self-improve)
+├── scripts/      train_runpod.py (standalone trainer) + setup-gh-secrets.sh
+├── infra/        cloudrun/service.yaml · terraform/ (show-and-destroy IaC) · mlflow/ (REFERENCE only) · prefect/
+├── docker/       entrypoint.sh (dev) + entrypoint.prod.sh (GCS asset sync + gunicorn) + sync_assets.py (ASSETS_PREFIX-aware)
 └── main.py       CLI entrypoint
 ```
 
@@ -92,13 +94,38 @@ python -m pytest tests/ -q
 docker compose -f infra/mlflow/docker-compose.local.yml up --build
 # → http://localhost:5000
 
-# MLflow tracking server — GCP (Cloud Run + Cloud SQL + GCS)
-bash infra/mlflow/deploy.sh    # see infra/mlflow/README.md for required env
+# MLflow tracking server — GCP (REFERENCE ONLY post-2026-06-07; needs --force)
+bash infra/mlflow/deploy.sh --force    # see infra/mlflow/README.md
 
 # Prefect flows (one-time pool setup; then deploy)
 prefect work-pool create --type process default-process
 prefect deploy --all --prefect-file flows/prefect.yaml
 python flows/promote_flow.py <mlflow-run-id>
+```
+
+## Operator commands (Makefile)
+
+Make is the canonical entry point for everything that crosses the network. Common workflow:
+
+```bash
+# Local — nano smoke-test on CPU (~2 min)
+make test          # 100 pytest, ruff
+make local         # 8×8 maze, 200 episodes — verify pipeline, not convergence
+
+# RunPod — push image, create pod, watch
+make ghcr-login    # docker login ghcr.io (paste GitHub PAT with write:packages)
+make push          # build runpod/Dockerfile → ghcr.io/juan-garassino/deepmaze-train:latest
+make runpod                                  # training only
+make runpod-improve API_KEY=sk-ant-...       # train + Claude self-improve loop
+make runpod-list / runpod-get POD_ID=...     # status; logs via `runpodctl ssh connect`
+
+# GitHub repo configuration (idempotent — sets the deterministic constants)
+make gh-secrets    # CORS_ORIGINS + WIF_SERVICE_ACCOUNT prompted; others auto-set
+
+# Cloud deploy via Terraform (show-and-destroy under €25/mo)
+cd infra/terraform && terraform init && \
+  terraform import google_storage_bucket.artifacts garassino-ml-artifacts && \
+  terraform apply -var "wif_pool_id=projects/634336216563/locations/global/workloadIdentityPools/gh-actions"
 ```
 
 ## Pretrained inference
