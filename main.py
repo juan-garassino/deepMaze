@@ -46,6 +46,12 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--lava_reward", type=float, default=-1.0)
     p.add_argument("--bump_penalty", type=float, default=-0.1,
                    help="Reward for bumping a wall (use -0.01 on big mazes).")
+    p.add_argument("--aux_features", action="store_true",
+                   help="Append [pos, treasure direction+distance, remaining] "
+                        "to the observation (not for tabular q).")
+    p.add_argument("--reward_shaping", action="store_true",
+                   help="Potential-based shaping toward the nearest remaining "
+                        "treasure (policy-invariant).")
     p.add_argument("--partial", type=int, default=None,
                    help="Egocentric (2K+1)x(2K+1) window; default full-view.")
     p.add_argument("--n_treasures", type=int, default=1)
@@ -122,6 +128,8 @@ def run(args):
                           ensure_solvable=not args.no_ensure_solvable,
                           n_lava=args.n_lava, lava_reward=args.lava_reward,
                           bump_penalty=args.bump_penalty,
+                          aux_features=args.aux_features,
+                          reward_shaping=args.reward_shaping,
                           partial_view=args.partial,
                           n_treasures=args.n_treasures,
                           collect_all=args.collect_all)
@@ -187,6 +195,8 @@ def run(args):
                                     ensure_solvable=not args.no_ensure_solvable,
                                     n_lava=args.n_lava, lava_reward=args.lava_reward,
                                     bump_penalty=args.bump_penalty,
+                                    aux_features=args.aux_features,
+                                    reward_shaping=args.reward_shaping,
                                     partial_view=args.partial,
                                     n_treasures=args.n_treasures,
                                     collect_all=args.collect_all)

@@ -18,10 +18,11 @@ from nets import VOCAB, grid_onehot
 
 class GridAttnEncoder(nn.Module):
     def __init__(self, h: int, w: int, dim: int = 64, heads: int = 4,
-                 conv_layers: int = 2):
+                 conv_layers: int = 2, aux_dim: int = 0):
         super().__init__()
         self.h, self.w = h, w
         self.dim = dim
+        self.aux_dim = aux_dim
         layers: list[nn.Module] = [nn.Conv2d(VOCAB, dim, 3, padding=1), nn.ReLU()]
         for _ in range(conv_layers - 1):
             layers += [nn.Conv2d(dim, dim, 3, padding=1), nn.ReLU()]
@@ -33,10 +34,16 @@ class GridAttnEncoder(nn.Module):
         nn.init.normal_(self.cls, std=0.02)
         self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
         self.norm = nn.LayerNorm(dim)
+        if aux_dim:
+            # aux joins after spatial pooling; output dim is unchanged so
+            # the LSTM/transformer stacks above need no change and weight
+            # transfer across maze sizes keeps working.
+            self.aux_proj = nn.Linear(aux_dim, dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor,
+                aux: torch.Tensor | None = None) -> torch.Tensor:
         """x: (B, h, w) int labels OR (B, VOCAB, h, w) one-hot float.
-        Returns (B, dim)."""
+        aux: optional (B, aux_dim) float. Returns (B, dim)."""
         if x.dim() == 3:
             x = grid_onehot(x, self.h, self.w)
         B = x.shape[0]
@@ -45,4 +52,7 @@ class GridAttnEncoder(nn.Module):
         z = z + self.pos
         cls = self.cls.expand(B, -1, -1)              # (B, 1, dim)
         out, _ = self.attn(cls, z, z, need_weights=False)
-        return self.norm(out.squeeze(1))              # (B, dim)
+        out = out.squeeze(1)
+        if aux is not None and self.aux_dim:
+            out = out + self.aux_proj(aux)
+        return self.norm(out)                         # (B, dim)

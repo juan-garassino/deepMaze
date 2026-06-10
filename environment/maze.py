@@ -20,6 +20,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 HOLE, LAND, START, EXIT, LAVA = 0, 1, 2, 3, 4
 AGENT_BASE = 5  # agents are encoded as AGENT_BASE + agent_index
+
+# Length of the auxiliary feature vector appended to the observation when
+# aux_features=True: [row, col, unit_dr, unit_dc, dist, remaining_frac].
+AUX_DIM = 6
 SPRITE_HOLE, SPRITE_LAND, SPRITE_LAVA, SPRITE_EXIT, SPRITE_AGENT = 0, 1, 2, 3, 4
 
 # Per-agent tints for multi-agent renders; index 0 = no tint.
@@ -35,7 +39,11 @@ class MazeEnvironment:
                  n_lava: int = 0, lava_reward: float = -1.0,
                  partial_view: int | None = None,
                  n_treasures: int = 1, collect_all: bool = False,
-                 bump_penalty: float = -0.1):
+                 bump_penalty: float = -0.1,
+                 aux_features: bool = False,
+                 reward_shaping: bool = False,
+                 shaping_gamma: float = 0.99,
+                 shaping_coef: float = 0.01):
         if width < 5 or height < 5:
             raise ValueError("Maze must be at least 5x5")
         self.width = int(width)
@@ -50,6 +58,12 @@ class MazeEnvironment:
         self.n_treasures = max(1, int(n_treasures))
         self.collect_all = bool(collect_all)
         self.bump_penalty = float(bump_penalty)
+        self.aux_features = bool(aux_features)
+        self.reward_shaping = bool(reward_shaping)
+        self.shaping_gamma = float(shaping_gamma)
+        self.shaping_coef = float(shaping_coef)
+        self._dist_map: np.ndarray | None = None
+        self._nearest_src: np.ndarray | None = None
         self._rng = np.random.default_rng(seed)
         self.action_size = 4
 
@@ -299,7 +313,96 @@ class MazeEnvironment:
         else:
             for _ in range(self.n_agents):
                 self.agent_positions.append(self._find_empty_cell(self.agent_positions))
+        self._dist_map = None  # treasures restored — distances are stale
         return self.get_observation()
+
+    # ------------------------------------------------------------------
+    # shaping / aux features (multi-source BFS over remaining treasures)
+    # ------------------------------------------------------------------
+    @property
+    def aux_dim(self) -> int:
+        return AUX_DIM if self.aux_features else 0
+
+    @property
+    def grid_obs_shape(self) -> tuple[int, int]:
+        """Shape of the GRID part of the observation (window or full)."""
+        if self.partial_view is not None:
+            size = 2 * self.partial_view + 1
+            return (size, size)
+        return (self.height, self.width)
+
+    def split_observation(self, obs) -> tuple[np.ndarray, np.ndarray | None]:
+        """(grid_2d, aux_vec | None). Accepts both the 2-D grid form and the
+        flat grid+aux form; the grid comes back as integer cell labels."""
+        obs = np.asarray(obs)
+        if obs.ndim == 2:
+            return obs, None
+        gh, gw = self.grid_obs_shape
+        grid = obs[:gh * gw].reshape(gh, gw)
+        aux = obs[gh * gw:]
+        return grid.astype(np.int64), (aux if aux.size else None)
+
+    def _shaping_targets(self) -> set[tuple[int, int]]:
+        if self.collect_all:
+            return self._remaining
+        return {p for p in self.treasure_positions if self.maze[p] == EXIT}
+
+    def _get_dist_map(self) -> tuple[np.ndarray, np.ndarray]:
+        """(dist, nearest_src): BFS distance to the nearest remaining
+        treasure and that treasure's coordinates, per cell. Cached;
+        invalidated on reset/regenerate/treasure consumption."""
+        if self._dist_map is None:
+            from collections import deque
+            H, W = self.height, self.width
+            dist = np.full((H, W), np.inf, dtype=np.float32)
+            src = np.full((H, W, 2), -1, dtype=np.int16)
+            q = deque()
+            for (r, c) in self._shaping_targets():
+                dist[r, c] = 0.0
+                src[r, c] = (r, c)
+                q.append((r, c))
+            while q:
+                r, c = q.popleft()
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr, nc = r + dr, c + dc
+                    if (0 <= nr < H and 0 <= nc < W
+                            and self.maze[nr, nc] != HOLE
+                            and not np.isfinite(dist[nr, nc])):
+                        dist[nr, nc] = dist[r, c] + 1.0
+                        src[nr, nc] = src[r, c]
+                        q.append((nr, nc))
+            self._dist_map, self._nearest_src = dist, src
+        return self._dist_map, self._nearest_src
+
+    def _phi(self, pos: tuple[int, int]) -> float:
+        """Potential Φ(s) = -coef · BFS-dist to nearest remaining treasure.
+        Function of (position, remaining-set) — both state — so shaping
+        r += γΦ(s')-Φ(s) is policy-invariant (Ng-Harada-Russell)."""
+        dist, _ = self._get_dist_map()
+        d = float(dist[pos])
+        if not np.isfinite(d):
+            d = float(self.width + self.height)
+        return -self.shaping_coef * d
+
+    def _aux_vector(self) -> np.ndarray:
+        r, c = self.agent_positions[0]
+        dist, src = self._get_dist_map()
+        d = float(dist[r, c])
+        scale = float(self.width + self.height)
+        if np.isfinite(d) and src[r, c][0] >= 0:
+            tr, tc = int(src[r, c][0]), int(src[r, c][1])
+            dr, dc = tr - r, tc - c
+            norm = float(np.hypot(dr, dc))
+            unit = (dr / norm, dc / norm) if norm > 0 else (0.0, 0.0)
+            d_n = min(d / scale, 1.0)
+        else:
+            unit, d_n = (0.0, 0.0), 1.0
+        remaining = (len(self._remaining) / self.n_treasures
+                     if self.collect_all else 1.0)
+        return np.array([
+            r / max(self.height - 1, 1), c / max(self.width - 1, 1),
+            unit[0], unit[1], d_n, remaining,
+        ], dtype=np.float32)
 
     def get_observation(self) -> np.ndarray:
         """Full or partial (egocentric window) observation.
@@ -311,7 +414,7 @@ class MazeEnvironment:
         for i, pos in enumerate(self.agent_positions):
             full[pos] = AGENT_BASE + i
         if self.partial_view is None:
-            return full
+            return self._with_aux(full)
         K = self.partial_view
         size = 2 * K + 1
         out = np.full((size, size), HOLE, dtype=full.dtype)
@@ -321,7 +424,13 @@ class MazeEnvironment:
                 rr, cc = r + di, c + dj
                 if 0 <= rr < self.height and 0 <= cc < self.width:
                     out[di + K, dj + K] = full[rr, cc]
-        return out
+        return self._with_aux(out)
+
+    def _with_aux(self, grid: np.ndarray) -> np.ndarray:
+        if not self.aux_features:
+            return grid
+        return np.concatenate([grid.ravel().astype(np.float32),
+                               self._aux_vector()])
 
     def step(self, actions: int | Sequence[int]):
         if self.n_agents == 1 and isinstance(actions, (int, np.integer)):
@@ -332,6 +441,7 @@ class MazeEnvironment:
         rewards, dones = [], []
         for i, action in enumerate(actions):
             r, c = self.agent_positions[i]
+            phi_s = self._phi((r, c)) if self.reward_shaping else 0.0
             nr, nc = r, c
             if action == 0:   nr = max(0, r - 1)
             elif action == 1: nc = min(self.width - 1, c + 1)
@@ -353,12 +463,17 @@ class MazeEnvironment:
                     done = not self._remaining
                 else:
                     done = True
+                self._dist_map = None  # remaining-set changed
             elif cell == LAVA:
                 reward, done = self.lava_reward, True
             else:
                 reward, done = -0.01, False
 
             self.agent_positions[i] = target
+            if self.reward_shaping:
+                # Potential-based: r += γΦ(s') - Φ(s); Φ(terminal) = 0.
+                phi_ns = 0.0 if done else self._phi(target)
+                reward += self.shaping_gamma * phi_ns - phi_s
             rewards.append(reward)
             dones.append(done)
 

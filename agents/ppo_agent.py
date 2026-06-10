@@ -19,7 +19,7 @@ class PPOAgent(BaseAgent):
                  discount_factor=0.99, clip_eps=0.2, value_coef=0.5,
                  entropy_coef=0.01, n_steps=256, epochs=4, minibatches=4,
                  gae_lambda=0.95, net: str = "mlp", grid_shape=None,
-                 **_ignored):
+                 aux_dim=0, **_ignored):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.state_size = state_size
@@ -41,7 +41,7 @@ class PPOAgent(BaseAgent):
                     raise ValueError("CNN needs grid_shape=(h,w) for non-square obs")
                 grid_shape = (side, side)
             self.ac = CNNActorCritic(grid_shape[0], grid_shape[1],
-                                     action_size).to(self.device)
+                                     action_size, aux_dim=aux_dim).to(self.device)
         else:
             self.ac = MLPActorCritic(state_size, action_size).to(self.device)
         self.optimizer = optim.Adam(self.ac.parameters(), lr=learning_rate)

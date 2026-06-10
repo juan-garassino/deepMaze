@@ -44,11 +44,14 @@ class MLPHead(nn.Module):
 
 
 class CNNHead(nn.Module):
-    """3 conv layers + global avg pool + linear. Output_size = action_size."""
+    """3 conv layers + global avg pool + linear. Output_size = action_size.
+    aux_dim > 0: the flat input carries h*w grid cells + aux features; the
+    aux vector skips the conv trunk and joins at the head."""
 
-    def __init__(self, h: int, w: int, output_size: int):
+    def __init__(self, h: int, w: int, output_size: int, aux_dim: int = 0):
         super().__init__()
         self.h, self.w = h, w
+        self.aux_dim = aux_dim
         self.body = nn.Sequential(
             nn.Conv2d(VOCAB, 16, kernel_size=3, padding=1), nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=3, padding=1), nn.ReLU(),
@@ -56,34 +59,48 @@ class CNNHead(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
         )
-        self.head = nn.Linear(32, output_size)
+        self.head = nn.Linear(32 + aux_dim, output_size)
 
     def forward(self, x):
-        # x: flattened ints of shape (N, h*w) or already a 4-D float tensor.
+        # x: flattened ints of shape (N, h*w [+ aux]) or a 4-D float tensor.
+        aux = None
         if x.dim() == 2:
+            if self.aux_dim:
+                aux = x[:, self.h * self.w:].float()
+                x = x[:, :self.h * self.w]
             x = grid_onehot(x, self.h, self.w)
-        return self.head(self.body(x))
+        z = self.body(x)
+        if aux is not None:
+            z = torch.cat([z, aux], dim=-1)
+        return self.head(z)
 
 
 class CNNActorCritic(nn.Module):
     """Shared conv trunk + separate actor / critic heads."""
 
-    def __init__(self, h: int, w: int, action_size: int):
+    def __init__(self, h: int, w: int, action_size: int, aux_dim: int = 0):
         super().__init__()
         self.h, self.w = h, w
+        self.aux_dim = aux_dim
         self.trunk = nn.Sequential(
             nn.Conv2d(VOCAB, 16, kernel_size=3, padding=1), nn.Tanh(),
             nn.Conv2d(16, 32, kernel_size=3, padding=1), nn.Tanh(),
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
         )
-        self.actor = nn.Linear(32, action_size)
-        self.critic = nn.Linear(32, 1)
+        self.actor = nn.Linear(32 + aux_dim, action_size)
+        self.critic = nn.Linear(32 + aux_dim, 1)
 
     def forward(self, x):
+        aux = None
         if x.dim() == 2:
+            if self.aux_dim:
+                aux = x[:, self.h * self.w:].float()
+                x = x[:, :self.h * self.w]
             x = grid_onehot(x, self.h, self.w)
         z = self.trunk(x)
+        if aux is not None:
+            z = torch.cat([z, aux], dim=-1)
         return self.actor(z), self.critic(z)  # raw logits
 
 

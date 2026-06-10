@@ -21,7 +21,10 @@ Env vars (all optional — defaults shown):
     MAZE_WIDTH= MAZE_HEIGHT= N_TREASURES= NUM_EPISODES= MAX_STEPS=
     PARTIAL=5 N_LAVA=2 COLLECT_ALL=false GENERATOR=dfs DENSITY=0.2
     REGENERATE_EVERY=1 EVAL_REGENERATE=true EVAL_EPISODES=50
-    EXPLORATION_DECAY=0.999995 BUFFER_CAPACITY=50000
+    RANDOM_START=true BUMP_PENALTY=-0.01
+    AUX_FEATURES=true REWARD_SHAPING=true
+    EXPLORATION_DECAY=0 BUFFER_CAPACITY=0   # 0 = repo default; decay is
+                                            # per-EPISODE, capacity in EPISODES
 """
 
 from __future__ import annotations
@@ -97,6 +100,8 @@ EVAL_REGENERATE  = _env("EVAL_REGENERATE", True, bool)
 EVAL_EPISODES    = _env("EVAL_EPISODES", 50, int)
 RANDOM_START     = _env("RANDOM_START", True, bool)
 BUMP_PENALTY     = _env("BUMP_PENALTY", -0.01, float)
+AUX_FEATURES     = _env("AUX_FEATURES", True, bool)
+REWARD_SHAPING   = _env("REWARD_SHAPING", True, bool)
 
 # 0/0.0 = use repo defaults. Decay is per EPISODE (default 0.995); the old
 # 0.999995 per-step compensation constant is gone — agents no longer decay
@@ -158,6 +163,7 @@ def train_stage(agent_type: str, run_name: str,
         generator=GENERATOR, n_lava=N_LAVA, n_treasures=n_treasures,
         collect_all=COLLECT_ALL, partial_view=PARTIAL, seed=SEED,
         bump_penalty=BUMP_PENALTY,
+        aux_features=AUX_FEATURES, reward_shaping=REWARD_SHAPING,
     )
     overrides = _agent_overrides(agent_type)
     agent = create_agent(agent_type, env, **overrides)
@@ -237,6 +243,7 @@ def train_stage(agent_type: str, run_name: str,
             partial=PARTIAL, generator=GENERATOR, density=DENSITY, n_lava=N_LAVA,
             collect_all=COLLECT_ALL, seed=SEED,
             random_start=RANDOM_START, bump_penalty=BUMP_PENALTY,
+            aux_features=AUX_FEATURES, reward_shaping=REWARD_SHAPING,
             regenerate_every=REGENERATE_EVERY, eval_regenerate=EVAL_REGENERATE,
             warm_start_from=warm_start_path or "",
             **overrides,
@@ -268,6 +275,7 @@ def train_stage(agent_type: str, run_name: str,
         n_agents=1, density=DENSITY, generator=GENERATOR,
         no_ensure_solvable=False, n_lava=N_LAVA, lava_reward=-1.0,
         bump_penalty=BUMP_PENALTY,
+        aux_features=AUX_FEATURES, reward_shaping=REWARD_SHAPING,
         partial=PARTIAL, n_treasures=n_treasures, collect_all=COLLECT_ALL,
         seed=SEED, num_episodes=num_episodes, max_steps=max_steps,
         eval_episodes=EVAL_EPISODES, learning_rate=None, discount_factor=0.99,

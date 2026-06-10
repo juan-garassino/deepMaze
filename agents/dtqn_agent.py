@@ -57,14 +57,15 @@ class TransformerBlock(nn.Module):
 class DTQN(nn.Module):
     def __init__(self, h: int, w: int, action_size: int,
                  dim: int = 128, heads: int = 4, layers: int = 2,
-                 max_ctx: int = 64, ff_mult: int = 2):
+                 max_ctx: int = 64, ff_mult: int = 2, aux_dim: int = 0):
         super().__init__()
         self.h, self.w = h, w
         self.action_size = action_size
         self.dim = dim
         self.max_ctx = max_ctx
+        self.aux_dim = aux_dim
 
-        self.enc = GridAttnEncoder(h, w, dim=dim)
+        self.enc = GridAttnEncoder(h, w, dim=dim, aux_dim=aux_dim)
         self.action_emb = nn.Embedding(action_size + 1, dim)
         self.pos_emb = nn.Parameter(torch.zeros(1, max_ctx, dim))
         nn.init.normal_(self.pos_emb, std=0.02)
@@ -81,16 +82,28 @@ class DTQN(nn.Module):
         m = torch.ones((T, T), dtype=torch.bool, device=device)
         return torch.triu(m, diagonal=1)
 
+    def _encode(self, obs_seq: torch.Tensor) -> torch.Tensor:
+        """obs_seq: (B, T, h, w) int grid OR (B, T, h*w+aux) flat float.
+        Returns (B, T, dim)."""
+        if obs_seq.dim() == 3:  # flat grid+aux form
+            B, T, F = obs_seq.shape
+            gl = self.h * self.w
+            grid = obs_seq[..., :gl].reshape(B * T, self.h, self.w).long()
+            aux = obs_seq[..., gl:].reshape(B * T, -1).float()
+            return self.enc(grid, aux).reshape(B, T, -1)
+        B, T, H, W = obs_seq.shape
+        return self.enc(obs_seq.reshape(B * T, H, W)).reshape(B, T, -1)
+
     def forward(self, obs_seq: torch.Tensor, prev_actions: torch.Tensor,
                 key_padding_mask: torch.Tensor | None = None):
-        """obs_seq: (B, T, h, w) long. prev_actions: (B, T) long (-1 = none).
+        """obs_seq: (B, T, h, w) long or (B, T, h*w+aux) float.
+        prev_actions: (B, T) long (-1 = none).
         key_padding_mask: optional (B, T) bool, True = padded position.
         Returns Q (B, T, A)."""
-        B, T, H, W = obs_seq.shape
+        T = obs_seq.shape[1]
         if T > self.max_ctx:
             raise ValueError(f"context {T} > max_ctx {self.max_ctx}")
-        flat = obs_seq.reshape(B * T, H, W)
-        feats = self.enc(flat).reshape(B, T, -1)             # (B, T, dim)
+        feats = self._encode(obs_seq)                        # (B, T, dim)
         a_emb = self.action_emb((prev_actions + 1).clamp(min=0))
         pos = self.pos_emb[:, :T, :]
         z = feats + a_emb + pos
@@ -110,10 +123,11 @@ class DTQNAgent(BaseAgent):
                  exploration_rate=1.0, exploration_decay=0.995,
                  min_epsilon=0.05, batch_size=8, seq_len=16, burn_in=4,
                  target_sync=100, buffer_capacity=200,
-                 dim=128, heads=4, layers=2, max_ctx=64):
+                 dim=128, heads=4, layers=2, max_ctx=64, aux_dim=0):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.h, self.w = grid_shape
+        self.aux_dim = aux_dim
         self.gamma = discount_factor
         self.epsilon = exploration_rate
         self.epsilon_decay = exploration_decay
@@ -126,9 +140,10 @@ class DTQNAgent(BaseAgent):
         self._step = 0
 
         self.model = DTQN(self.h, self.w, action_size, dim, heads, layers,
-                          max_ctx).to(self.device)
+                          max_ctx, aux_dim=aux_dim).to(self.device)
         self.target_model = DTQN(self.h, self.w, action_size, dim, heads,
-                                 layers, max_ctx).to(self.device)
+                                 layers, max_ctx,
+                                 aux_dim=aux_dim).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
@@ -155,10 +170,21 @@ class DTQNAgent(BaseAgent):
         self._last_action = NO_ACTION
 
     def _ctx_tensors(self):
-        obs = np.stack(list(self._ctx_obs)).reshape(1, -1, self.h, self.w)
         pa = np.array([list(self._ctx_pa)], dtype=np.int64)
+        if self.aux_dim:
+            obs = np.stack(list(self._ctx_obs)).astype(np.float32)
+            obs = obs.reshape(1, len(self._ctx_obs), -1)
+            return (torch.from_numpy(obs).to(self.device),
+                    torch.from_numpy(pa).to(self.device))
+        obs = np.stack(list(self._ctx_obs)).reshape(1, -1, self.h, self.w)
         return (torch.from_numpy(obs).long().to(self.device),
                 torch.from_numpy(pa).to(self.device))
+
+    def _seq_tensor(self, arr):
+        """Batch of stored observations → model input tensor."""
+        if self.aux_dim:
+            return torch.from_numpy(arr.astype(np.float32)).to(self.device)
+        return torch.from_numpy(arr).long().to(self.device)
 
     def move(self, state):
         self._ctx_obs.append(np.asarray(state))
@@ -185,8 +211,8 @@ class DTQNAgent(BaseAgent):
     def _learn(self):
         batch = self.buf.sample(self.batch_size, self.seq_len)
         T = min(batch["obs"].shape[1], self.max_ctx)
-        obs_t = torch.from_numpy(batch["obs"][:, :T]).long().to(self.device)
-        nobs_t = torch.from_numpy(batch["next_obs"][:, :T]).long().to(self.device)
+        obs_t = self._seq_tensor(batch["obs"][:, :T])
+        nobs_t = self._seq_tensor(batch["next_obs"][:, :T])
         pa_t = torch.from_numpy(batch["prev_action"][:, :T]).to(self.device)
         act_t = torch.from_numpy(batch["action"][:, :T]).to(self.device)
         rew_t = torch.from_numpy(batch["reward"][:, :T]).to(self.device)
@@ -236,16 +262,26 @@ class DTQNAgent(BaseAgent):
         return {"kind": "attention_row", "data": last_row.tolist()}
 
     def q_values(self, state):
-        x = np.asarray(state).reshape(1, 1, self.h, self.w)
-        x = torch.from_numpy(x).long().to(self.device)
+        if self.aux_dim:
+            x = np.asarray(state, dtype=np.float32).reshape(1, 1, -1)
+            x = torch.from_numpy(x).to(self.device)
+        else:
+            x = np.asarray(state).reshape(1, 1, self.h, self.w)
+            x = torch.from_numpy(x).long().to(self.device)
         pa = torch.tensor([[NO_ACTION]], dtype=torch.long, device=self.device)
         with torch.no_grad():
             q = self.model(x, pa)
         return q.squeeze(0).squeeze(0).cpu().numpy()
 
     def q_values_batch(self, states):
-        x = np.stack([np.asarray(s).reshape(1, self.h, self.w) for s in states])
-        x = torch.from_numpy(x).long().to(self.device)
+        if self.aux_dim:
+            x = np.stack([np.asarray(s, dtype=np.float32).reshape(1, -1)
+                          for s in states])
+            x = torch.from_numpy(x).to(self.device)
+        else:
+            x = np.stack([np.asarray(s).reshape(1, self.h, self.w)
+                          for s in states])
+            x = torch.from_numpy(x).long().to(self.device)
         pa = torch.full((x.shape[0], 1), NO_ACTION,
                         dtype=torch.long, device=self.device)
         with torch.no_grad():

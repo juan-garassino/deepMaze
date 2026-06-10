@@ -12,7 +12,7 @@ class DQNAgent(BaseAgent):
                  discount_factor=0.99, exploration_rate=1.0,
                  exploration_decay=0.995, min_epsilon=0.01,
                  batch_size=64, target_sync=200, buffer_capacity=10000,
-                 net: str = "mlp", grid_shape=None):
+                 net: str = "mlp", grid_shape=None, aux_dim=0):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.state_size = state_size
@@ -33,8 +33,10 @@ class DQNAgent(BaseAgent):
                     raise ValueError("CNN needs grid_shape=(h,w) for non-square obs")
                 grid_shape = (side, side)
             self.h, self.w = grid_shape
-            self.model = CNNHead(self.h, self.w, action_size).to(self.device)
-            self.target_model = CNNHead(self.h, self.w, action_size).to(self.device)
+            self.model = CNNHead(self.h, self.w, action_size,
+                                 aux_dim=aux_dim).to(self.device)
+            self.target_model = CNNHead(self.h, self.w, action_size,
+                                        aux_dim=aux_dim).to(self.device)
         else:
             self.model = MLPHead(state_size, action_size).to(self.device)
             self.target_model = MLPHead(state_size, action_size).to(self.device)

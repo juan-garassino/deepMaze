@@ -16,10 +16,14 @@ from viz_events import EpisodeEvent, EventBus, PolicyEvent, RunEvent, StepEvent
 
 def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
     from hyperparameters import defaults_for
-    obs_shape = env.get_observation().shape  # (h, w)
-    state_size = int(np.prod(obs_shape))
+    state_size = int(np.prod(env.get_observation().shape))  # incl. aux
     action_size = env.action_size
-    grid_shape = obs_shape if len(obs_shape) == 2 else None
+    grid_shape = (env.grid_obs_shape if hasattr(env, "grid_obs_shape")
+                  else env.get_observation().shape)
+    aux_dim = getattr(env, "aux_dim", 0)
+    if aux_dim and agent_type == "q":
+        raise ValueError("Tabular Q cannot use aux_features — the continuous "
+                         "features explode the state-key space.")
     defaults = defaults_for(agent_type)
     overrides = {k: v for k, v in kwargs.items() if v is not None}
     dropped = set(overrides) - set(defaults)
@@ -35,17 +39,19 @@ def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
     if agent_type == "dqn":
         if hp.get("net") == "cnn":
             hp["grid_shape"] = grid_shape
+            hp["aux_dim"] = aux_dim
         return DQNAgent(state_size=state_size, action_size=action_size, **hp)
     if agent_type == "ppo":
         if hp.get("net") == "cnn":
             hp["grid_shape"] = grid_shape
+            hp["aux_dim"] = aux_dim
         return PPOAgent(state_size=state_size, action_size=action_size, **hp)
     if agent_type == "drqn":
         return DRQNAgent(state_size=state_size, action_size=action_size,
-                         grid_shape=grid_shape, **hp)
+                         grid_shape=grid_shape, aux_dim=aux_dim, **hp)
     if agent_type == "dtqn":
         return DTQNAgent(state_size=state_size, action_size=action_size,
-                         grid_shape=grid_shape, **hp)
+                         grid_shape=grid_shape, aux_dim=aux_dim, **hp)
     raise ValueError(f"Unknown agent type: {agent_type}")
 
 
@@ -95,7 +101,7 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                 mem = agent.memory_snapshot() if hasattr(agent, "memory_snapshot") else None
                 bus.publish(StepEvent(
                     episode=episode, step=step,
-                    state=np.asarray(next_state),
+                    state=env.split_observation(next_state)[0],
                     position=env.agent_positions[0],
                     action=int(action), reward=float(reward), done=bool(done),
                     q_values=qv,
@@ -151,7 +157,7 @@ def simulate_episode_streaming(env: MazeEnvironment, agent, bus: EventBus,
         mem = agent.memory_snapshot() if hasattr(agent, "memory_snapshot") else None
         bus.publish(StepEvent(
             episode=episode, step=step,
-            state=np.asarray(next_state),
+            state=env.split_observation(next_state)[0],
             position=env.agent_positions[0],
             action=int(action), reward=float(reward), done=bool(done),
             q_values=None, memory=mem,

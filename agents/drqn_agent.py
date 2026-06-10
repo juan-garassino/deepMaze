@@ -26,23 +26,35 @@ from episode_buffer import NO_ACTION, EpisodeBuffer
 class DRQN(nn.Module):
     def __init__(self, h: int, w: int, action_size: int,
                  enc_dim: int = 64, lstm_hidden: int = 128,
-                 action_emb_dim: int = 16):
+                 action_emb_dim: int = 16, aux_dim: int = 0):
         super().__init__()
         self.h, self.w = h, w
         self.action_size = action_size
-        self.enc = GridAttnEncoder(h, w, dim=enc_dim)
+        self.aux_dim = aux_dim
+        self.enc = GridAttnEncoder(h, w, dim=enc_dim, aux_dim=aux_dim)
         # +1 for NO_ACTION sentinel
         self.action_emb = nn.Embedding(action_size + 1, action_emb_dim)
         self.lstm = nn.LSTM(enc_dim + action_emb_dim, lstm_hidden,
                             batch_first=True)
         self.head = nn.Linear(lstm_hidden, action_size)
 
+    def _encode(self, obs_seq: torch.Tensor) -> torch.Tensor:
+        """obs_seq: (B, T, h, w) int grid OR (B, T, h*w+aux) flat float.
+        Returns (B, T, enc_dim)."""
+        if obs_seq.dim() == 3:  # flat grid+aux form
+            B, T, F = obs_seq.shape
+            gl = self.h * self.w
+            grid = obs_seq[..., :gl].reshape(B * T, self.h, self.w).long()
+            aux = obs_seq[..., gl:].reshape(B * T, -1).float()
+            return self.enc(grid, aux).reshape(B, T, -1)
+        B, T, H, W = obs_seq.shape
+        return self.enc(obs_seq.reshape(B * T, H, W)).reshape(B, T, -1)
+
     def forward(self, obs_seq: torch.Tensor, prev_actions: torch.Tensor,
                 hidden: tuple[torch.Tensor, torch.Tensor] | None = None):
-        """obs_seq: (B, T, h, w) long. prev_actions: (B, T) long (-1 = none)."""
-        B, T, H, W = obs_seq.shape
-        flat = obs_seq.reshape(B * T, H, W)
-        feats = self.enc(flat).reshape(B, T, -1)               # (B, T, enc_dim)
+        """obs_seq: (B, T, h, w) long or (B, T, h*w+aux) float.
+        prev_actions: (B, T) long (-1 = none)."""
+        feats = self._encode(obs_seq)                           # (B, T, enc_dim)
         a_idx = (prev_actions + 1).clamp(min=0)                 # shift -1 -> 0
         a_emb = self.action_emb(a_idx)                          # (B, T, ae)
         z = torch.cat([feats, a_emb], dim=-1)
@@ -56,10 +68,11 @@ class DRQNAgent(BaseAgent):
                  exploration_decay=0.995, min_epsilon=0.05,
                  batch_size=8, seq_len=8, burn_in=4, target_sync=100,
                  buffer_capacity=200, lstm_hidden=128, enc_dim=64,
-                 action_emb_dim=16):
+                 action_emb_dim=16, aux_dim=0):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.h, self.w = grid_shape
+        self.aux_dim = aux_dim
         self.gamma = discount_factor
         self.epsilon = exploration_rate
         self.epsilon_decay = exploration_decay
@@ -71,9 +84,10 @@ class DRQNAgent(BaseAgent):
         self._step = 0
 
         self.model = DRQN(self.h, self.w, action_size, enc_dim, lstm_hidden,
-                          action_emb_dim).to(self.device)
+                          action_emb_dim, aux_dim).to(self.device)
         self.target_model = DRQN(self.h, self.w, action_size, enc_dim,
-                                 lstm_hidden, action_emb_dim).to(self.device)
+                                 lstm_hidden, action_emb_dim,
+                                 aux_dim).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.buf = EpisodeBuffer(buffer_capacity)
@@ -93,8 +107,17 @@ class DRQNAgent(BaseAgent):
         super().on_episode_end()
 
     def _obs_tensor(self, obs):
+        if self.aux_dim:
+            x = np.asarray(obs, dtype=np.float32).reshape(1, 1, -1)
+            return torch.from_numpy(x).to(self.device)
         x = np.asarray(obs).reshape(1, 1, self.h, self.w)
         return torch.from_numpy(x).long().to(self.device)
+
+    def _seq_tensor(self, arr):
+        """Batch of stored observations → model input tensor."""
+        if self.aux_dim:
+            return torch.from_numpy(arr.astype(np.float32)).to(self.device)
+        return torch.from_numpy(arr).long().to(self.device)
 
     def move(self, state):
         x = self._obs_tensor(state)
@@ -120,8 +143,8 @@ class DRQNAgent(BaseAgent):
 
     def _learn(self):
         batch = self.buf.sample(self.batch_size, self.seq_len)
-        obs_t = torch.from_numpy(batch["obs"]).long().to(self.device)
-        nobs_t = torch.from_numpy(batch["next_obs"]).long().to(self.device)
+        obs_t = self._seq_tensor(batch["obs"])
+        nobs_t = self._seq_tensor(batch["next_obs"])
         pa_t = torch.from_numpy(batch["prev_action"]).to(self.device)
         act_t = torch.from_numpy(batch["action"]).to(self.device)
         rew_t = torch.from_numpy(batch["reward"]).to(self.device)
@@ -184,8 +207,14 @@ class DRQNAgent(BaseAgent):
         return q.squeeze(0).squeeze(0).cpu().numpy()
 
     def q_values_batch(self, states):
-        x = np.stack([np.asarray(s).reshape(1, self.h, self.w) for s in states])
-        x = torch.from_numpy(x).long().to(self.device)
+        if self.aux_dim:
+            x = np.stack([np.asarray(s, dtype=np.float32).reshape(1, -1)
+                          for s in states])
+            x = torch.from_numpy(x).to(self.device)
+        else:
+            x = np.stack([np.asarray(s).reshape(1, self.h, self.w)
+                          for s in states])
+            x = torch.from_numpy(x).long().to(self.device)
         pa = torch.full((x.shape[0], 1), NO_ACTION,
                         dtype=torch.long, device=self.device)
         with torch.no_grad():
