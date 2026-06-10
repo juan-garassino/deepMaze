@@ -19,7 +19,13 @@ from manager import MazeManager  # noqa: E402
 from maze import MazeEnvironment, RenderMaze  # noqa: E402
 from recorders import MetricsCollector, ReplayRecorder, TqdmTail, TrajectoryCollector  # noqa: E402
 from seeding import seed_everything  # noqa: E402
-from train import create_agent, evaluate_agent, simulate_episode, train_agent  # noqa: E402
+from train import (  # noqa: E402
+    create_agent,
+    default_max_steps,
+    evaluate_agent,
+    simulate_episode,
+    train_agent,
+)
 from viz_events import EventBus  # noqa: E402
 
 
@@ -38,6 +44,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--n_lava", type=int, default=0,
                    help="Number of LAVA cells (terminal -1) off the shortest path.")
     p.add_argument("--lava_reward", type=float, default=-1.0)
+    p.add_argument("--bump_penalty", type=float, default=-0.1,
+                   help="Reward for bumping a wall (use -0.01 on big mazes).")
     p.add_argument("--partial", type=int, default=None,
                    help="Egocentric (2K+1)x(2K+1) window; default full-view.")
     p.add_argument("--n_treasures", type=int, default=1)
@@ -45,7 +53,9 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Episode ends only after ALL treasures collected.")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--num_episodes", type=int, default=500)
-    p.add_argument("--max_steps", type=int, default=200)
+    p.add_argument("--max_steps", type=int, default=None,
+                   help="Step budget per episode (default: 3*(w+h)*n_treasures "
+                        "for collect_all, 3*(w+h) otherwise).")
     p.add_argument("--eval_episodes", type=int, default=50)
     p.add_argument("--learning_rate", type=float, default=None)
     p.add_argument("--discount_factor", type=float, default=0.99)
@@ -108,10 +118,15 @@ def run(args):
                           seed=args.seed, generator=args.generator,
                           ensure_solvable=not args.no_ensure_solvable,
                           n_lava=args.n_lava, lava_reward=args.lava_reward,
+                          bump_penalty=args.bump_penalty,
                           partial_view=args.partial,
                           n_treasures=args.n_treasures,
                           collect_all=args.collect_all)
-    mgr.log(f"Maze: gen={args.generator} solvable={env.is_solvable()}")
+    if args.max_steps is None:
+        args.max_steps = default_max_steps(env)
+        mgr.save_config(vars(args))  # re-dump with the computed budget
+    mgr.log(f"Maze: gen={args.generator} solvable={env.is_solvable()} "
+            f"max_steps={args.max_steps}")
     agent_kw = {"discount_factor": args.discount_factor}
     if args.learning_rate is not None:
         agent_kw["learning_rate"] = args.learning_rate
@@ -166,6 +181,7 @@ def run(args):
                                     seed=seed_k, generator=args.generator,
                                     ensure_solvable=not args.no_ensure_solvable,
                                     n_lava=args.n_lava, lava_reward=args.lava_reward,
+                                    bump_penalty=args.bump_penalty,
                                     partial_view=args.partial,
                                     n_treasures=args.n_treasures,
                                     collect_all=args.collect_all)

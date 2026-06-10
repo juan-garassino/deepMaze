@@ -34,7 +34,8 @@ class MazeEnvironment:
                  generator: str = "random", ensure_solvable: bool = True,
                  n_lava: int = 0, lava_reward: float = -1.0,
                  partial_view: int | None = None,
-                 n_treasures: int = 1, collect_all: bool = False):
+                 n_treasures: int = 1, collect_all: bool = False,
+                 bump_penalty: float = -0.1):
         if width < 5 or height < 5:
             raise ValueError("Maze must be at least 5x5")
         self.width = int(width)
@@ -48,6 +49,7 @@ class MazeEnvironment:
         self.partial_view = None if partial_view is None else int(partial_view)
         self.n_treasures = max(1, int(n_treasures))
         self.collect_all = bool(collect_all)
+        self.bump_penalty = float(bump_penalty)
         self._rng = np.random.default_rng(seed)
         self.action_size = 4
 
@@ -297,11 +299,6 @@ class MazeEnvironment:
         else:
             for _ in range(self.n_agents):
                 self.agent_positions.append(self._find_empty_cell(self.agent_positions))
-            # Make agent 0 start at start_pos when possible.
-            if self.maze[self.start_pos] != HOLE:
-                taken = set(self.agent_positions[1:])
-                if self.start_pos not in taken:
-                    self.agent_positions[0] = self.start_pos
         return self.get_observation()
 
     def get_observation(self) -> np.ndarray:
@@ -346,7 +343,7 @@ class MazeEnvironment:
             blocked = cell == HOLE or target in self.agent_positions
             if blocked:
                 target = (r, c)
-                reward, done = -0.1, False
+                reward, done = self.bump_penalty, False
             elif cell == EXIT:
                 reward = 1.0
                 if self.collect_all:

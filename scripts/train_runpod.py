@@ -95,6 +95,8 @@ PARTIAL          = _env("PARTIAL", 5, int)
 REGENERATE_EVERY = _env("REGENERATE_EVERY", 1, int)
 EVAL_REGENERATE  = _env("EVAL_REGENERATE", True, bool)
 EVAL_EPISODES    = _env("EVAL_EPISODES", 50, int)
+RANDOM_START     = _env("RANDOM_START", True, bool)
+BUMP_PENALTY     = _env("BUMP_PENALTY", -0.01, float)
 
 EXPLORATION_DECAY = _env("EXPLORATION_DECAY", 0.999995, float)
 BUFFER_CAPACITY   = _env("BUFFER_CAPACITY", 50000, int)
@@ -152,6 +154,7 @@ def train_stage(agent_type: str, run_name: str,
         width=width, height=height, density=DENSITY,
         generator=GENERATOR, n_lava=N_LAVA, n_treasures=n_treasures,
         collect_all=COLLECT_ALL, partial_view=PARTIAL, seed=SEED,
+        bump_penalty=BUMP_PENALTY,
     )
     overrides = _agent_overrides(agent_type)
     agent = create_agent(agent_type, env, **overrides)
@@ -199,7 +202,7 @@ def train_stage(agent_type: str, run_name: str,
         )
         reward_buf.append(ev.total_reward)
         length_buf.append(ev.length)
-        success_buf.append(1 if ev.total_reward > 0 else 0)
+        success_buf.append(1 if ev.success else 0)
 
         elapsed = time.time() - t0
         eps_per_s = (ev.episode + 1) / max(elapsed, 1e-6)
@@ -230,11 +233,13 @@ def train_stage(agent_type: str, run_name: str,
             num_episodes=num_episodes, max_steps=max_steps,
             partial=PARTIAL, generator=GENERATOR, density=DENSITY, n_lava=N_LAVA,
             collect_all=COLLECT_ALL, seed=SEED,
+            random_start=RANDOM_START, bump_penalty=BUMP_PENALTY,
             regenerate_every=REGENERATE_EVERY, eval_regenerate=EVAL_REGENERATE,
             warm_start_from=warm_start_path or "",
             **overrides,
         ))
         train_agent(env, agent, num_episodes=num_episodes, max_steps=max_steps, bus=bus,
+                    random_start=RANDOM_START,
                     regenerate_every=(REGENERATE_EVERY or None))
         mean_r, mean_l, succ = evaluate_agent(
             env, agent, num_episodes=EVAL_EPISODES, max_steps=max_steps,
@@ -259,6 +264,7 @@ def train_stage(agent_type: str, run_name: str,
         maze_width=width, maze_height=height,
         n_agents=1, density=DENSITY, generator=GENERATOR,
         no_ensure_solvable=False, n_lava=N_LAVA, lava_reward=-1.0,
+        bump_penalty=BUMP_PENALTY,
         partial=PARTIAL, n_treasures=n_treasures, collect_all=COLLECT_ALL,
         seed=SEED, num_episodes=num_episodes, max_steps=max_steps,
         eval_episodes=EVAL_EPISODES, learning_rate=None, discount_factor=0.99,
@@ -266,7 +272,7 @@ def train_stage(agent_type: str, run_name: str,
         replay_fmt="webp", frame_skip=1, max_frames=None,
         policy_snapshot_every=50, live=False, live_web=False, web_port=8000,
         run_id=run_id, run_name=run_name,
-        random_start=False, resume=None, eval_maze="same", eval_seeds=1,
+        random_start=RANDOM_START, resume=None, eval_maze="same", eval_seeds=1,
     ), indent=2))
 
     torch.save(_module_of(agent).state_dict(), out_dir / "model.pt")
