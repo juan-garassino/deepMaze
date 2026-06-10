@@ -74,6 +74,18 @@ class EpisodeEvent:
 
 
 @dataclass
+class EvalEvent:
+    """Periodic greedy-evaluation snapshot emitted by train_agent."""
+    episode: int
+    mean_reward: float
+    mean_length: float
+    success_rate: float
+
+    def to_json(self) -> dict:
+        return {"type": "eval", **asdict(self)}
+
+
+@dataclass
 class PolicyEvent:
     episode: int
     snapshot: Any = field(repr=False)
@@ -92,7 +104,7 @@ class RunEvent:
         return {"type": "run", "kind": self.kind, "info": self.info}
 
 
-VizEvent = Any  # StepEvent | EpisodeEvent | PolicyEvent | RunEvent
+VizEvent = Any  # StepEvent | EpisodeEvent | EvalEvent | PolicyEvent | RunEvent
 
 
 class EventBus:

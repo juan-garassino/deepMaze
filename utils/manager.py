@@ -122,20 +122,27 @@ class MazeManager:
         self.log(f"Rollout viz saved to {out}")
         return out
 
-    def save_best_model(self, agent, eval_reward: float) -> bool:
-        """Persist agent as model.best.* if eval_reward improves the running best.
-        Returns True if persisted."""
+    def save_best_model(self, agent, metric: float,
+                        metric_name: str = "eval_success_rate",
+                        episode: int | None = None) -> bool:
+        """Persist agent as model.best.* if `metric` improves the running
+        best. Returns True if persisted. Meaningful when called repeatedly
+        (periodic eval); a single post-training call always persists."""
         best_file = self.run_dir / "best_eval.json"
         prev = float("-inf")
         if best_file.exists():
             try:
-                prev = float(json.loads(best_file.read_text())["eval_reward"])
+                payload = json.loads(best_file.read_text())
+                # legacy files recorded "eval_reward"
+                prev = float(payload.get("metric", payload.get("eval_reward")))
             except Exception:
                 pass
-        if eval_reward <= prev:
+        if metric <= prev:
             return False
         self.save_model(agent, filename="model.best")
-        best_file.write_text(json.dumps({"eval_reward": eval_reward}))
+        best_file.write_text(json.dumps({"metric": metric,
+                                         "metric_name": metric_name,
+                                         "episode": episode}))
         return True
 
     def save_policy_heatmap(self, q_source, env) -> Path:

@@ -30,7 +30,14 @@ for sub in ("agents", "environment", "training", "utils", "web", "config"):
         sys.path.insert(0, p)
 
 import numpy as np  # noqa: E402
-from viz_events import EpisodeEvent, EventBus, PolicyEvent, RunEvent, StepEvent  # noqa: E402
+from viz_events import (  # noqa: E402
+    EpisodeEvent,
+    EvalEvent,
+    EventBus,
+    PolicyEvent,
+    RunEvent,
+    StepEvent,
+)
 
 STATIC = os.path.join(_HERE, "static")
 
@@ -95,7 +102,7 @@ def _event_to_json(ev) -> str:
     if isinstance(ev, StepEvent):
         payload = ev.to_json_full() if ev.step == 0 else ev.to_json_delta()
         return json.dumps(payload)
-    if isinstance(ev, (EpisodeEvent, PolicyEvent, RunEvent)):
+    if isinstance(ev, (EpisodeEvent, EvalEvent, PolicyEvent, RunEvent)):
         return json.dumps(ev.to_json())
     return json.dumps({"type": "unknown"})
 

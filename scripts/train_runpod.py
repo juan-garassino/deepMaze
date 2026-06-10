@@ -23,6 +23,9 @@ Env vars (all optional — defaults shown):
     REGENERATE_EVERY=1 EVAL_REGENERATE=true EVAL_EPISODES=50
     RANDOM_START=true BUMP_PENALTY=-0.01
     AUX_FEATURES=true REWARD_SHAPING=true
+    EVAL_EVERY=0 ADVANCE_THRESHOLD=0 STAGE_MAX_REPEATS=1
+    # EVAL_EVERY 0 = num_episodes//10. ADVANCE_THRESHOLD gates curriculum
+    # promotion on periodic-eval success rate (0 disables the gate).
     EXPLORATION_DECAY=0 BUFFER_CAPACITY=0   # 0 = repo default; decay is
                                             # per-EPISODE, capacity in EPISODES
 """
@@ -102,6 +105,9 @@ RANDOM_START     = _env("RANDOM_START", True, bool)
 BUMP_PENALTY     = _env("BUMP_PENALTY", -0.01, float)
 AUX_FEATURES     = _env("AUX_FEATURES", True, bool)
 REWARD_SHAPING   = _env("REWARD_SHAPING", True, bool)
+EVAL_EVERY        = _env("EVAL_EVERY", 0, int)       # 0 = num_episodes//10
+ADVANCE_THRESHOLD = _env("ADVANCE_THRESHOLD", 0.0, float)  # 0 = gate off
+STAGE_MAX_REPEATS = _env("STAGE_MAX_REPEATS", 1, int)
 
 # 0/0.0 = use repo defaults. Decay is per EPISODE (default 0.995); the old
 # 0.999995 per-step compensation constant is gone — agents no longer decay
@@ -235,6 +241,20 @@ def train_stage(agent_type: str, run_name: str,
 
     bus.subscribe(on_ep)
 
+    best = {"succ": -1.0, "sd": None, "episode": None}
+
+    def on_eval(ep: int, m: dict):
+        mlflow.log_metrics({f"periodic_{k}": v for k, v in m.items()}, step=ep)
+        print(f"  ◈ eval @ {ep}: succ={m['success_rate']:.1%} "
+              f"R̄={m['mean_reward']:+.2f}", flush=True)
+        if m["success_rate"] > best["succ"]:
+            best["succ"] = m["success_rate"]
+            best["episode"] = ep
+            best["sd"] = {k: v.detach().cpu().clone()
+                          for k, v in _module_of(agent).state_dict().items()}
+
+    eval_every = EVAL_EVERY or max(50, num_episodes // 10)
+
     with mlflow.start_run(run_name=run_name) as run:
         mlflow.log_params(dict(
             agent_type=agent_type, run_name=run_name,
@@ -250,7 +270,8 @@ def train_stage(agent_type: str, run_name: str,
         ))
         train_agent(env, agent, num_episodes=num_episodes, max_steps=max_steps, bus=bus,
                     random_start=RANDOM_START,
-                    regenerate_every=(REGENERATE_EVERY or None))
+                    regenerate_every=(REGENERATE_EVERY or None),
+                    eval_every=eval_every, eval_episodes=10, on_eval=on_eval)
         mean_r, mean_l, succ = evaluate_agent(
             env, agent, num_episodes=EVAL_EPISODES, max_steps=max_steps,
             regenerate_each=EVAL_REGENERATE,
@@ -287,6 +308,11 @@ def train_stage(agent_type: str, run_name: str,
     ), indent=2))
 
     torch.save(_module_of(agent).state_dict(), out_dir / "model.pt")
+    best_path = None
+    if best["sd"] is not None:
+        best_path = out_dir / "model.best.pt"
+        torch.save(best["sd"], best_path)
+        print(f"  best snapshot: succ={best['succ']:.1%} @ ep {best['episode']}")
     final = render_snapshot(num_episodes)
     shutil.copy(final, out_dir / "viz" / "replay.webp")
 
@@ -297,7 +323,9 @@ def train_stage(agent_type: str, run_name: str,
     return {
         "agent_type": agent_type, "run_name": run_name, "run_id": run_id,
         "eval_success_rate": succ, "eval_mean_reward": mean_r,
+        "best_success_rate": best["succ"],
         "model_path": str(out_dir / "model.pt"),
+        "best_model_path": str(best_path) if best_path else None,
     }
 
 
@@ -327,11 +355,26 @@ def main():
         warm = None
         stage_results = []
         for i, (w, h, nt, ne, mx) in enumerate(STAGES):
-            run_name = f"{agent_type}_{RUN_TAG}_s{i}_{w}x{h}"
-            res = train_stage(agent_type, run_name, w, h, nt, ne, mx,
-                              warm_start_path=warm)
-            stage_results.append(res)
-            warm = res["model_path"]
+            res = None
+            for attempt in range(1 + max(0, STAGE_MAX_REPEATS - 1)):
+                run_name = f"{agent_type}_{RUN_TAG}_s{i}_{w}x{h}" + (
+                    f"_r{attempt}" if attempt else "")
+                res = train_stage(agent_type, run_name, w, h, nt, ne, mx,
+                                  warm_start_path=warm)
+                stage_results.append(res)
+                gate = max(res["eval_success_rate"], res["best_success_rate"])
+                if not ADVANCE_THRESHOLD or gate >= ADVANCE_THRESHOLD:
+                    break
+                # retry the same stage from its best snapshot
+                warm = res["best_model_path"] or res["model_path"]
+                print(f"  ⟳ stage {i} below gate "
+                      f"({gate:.1%} < {ADVANCE_THRESHOLD:.1%}) — retrying")
+            gate = max(res["eval_success_rate"], res["best_success_rate"])
+            if ADVANCE_THRESHOLD and gate < ADVANCE_THRESHOLD:
+                print(f"  ✗ stage {i} never passed the gate — stopping "
+                      f"curriculum for {agent_type}")
+                break
+            warm = res["best_model_path"] or res["model_path"]
         all_results[agent_type] = stage_results
 
     print()

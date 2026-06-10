@@ -63,6 +63,9 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Step budget per episode (default: 3*(w+h)*n_treasures "
                         "for collect_all, 3*(w+h) otherwise).")
     p.add_argument("--eval_episodes", type=int, default=50)
+    p.add_argument("--eval_every", type=int, default=None,
+                   help="Greedy-eval every N episodes; drives model.best "
+                        "checkpoint selection (default: off).")
     p.add_argument("--learning_rate", type=float, default=None)
     p.add_argument("--discount_factor", type=float, default=0.99)
     p.add_argument("--exploration_decay", type=float, default=None,
@@ -103,7 +106,12 @@ def _resume_agent(agent, path: str, mgr) -> None:
             agent.Q.update(pickle.load(f))
     else:
         module = getattr(agent, "model", None) or getattr(agent, "ac", None)
-        module.load_state_dict(torch.load(path, map_location=getattr(agent, "device", "cpu")))
+        sd = torch.load(path, map_location=getattr(agent, "device", "cpu"))
+        module.load_state_dict(sd)
+        # Sync the target net too — otherwise the first target_sync window
+        # trains toward a randomly-initialized target.
+        if hasattr(agent, "target_model"):
+            agent.target_model.load_state_dict(sd)
     mgr.log(f"Resumed agent state from {path}")
 
 
@@ -173,7 +181,11 @@ def run(args):
                 bus=bus,
                 policy_snapshot_every=args.policy_snapshot_every,
                 emit_steps=True,
-                random_start=args.random_start)
+                random_start=args.random_start,
+                eval_every=args.eval_every,
+                eval_episodes=min(args.eval_episodes, 10),
+                on_eval=lambda ep, m: mgr.save_best_model(
+                    agent, m["success_rate"], episode=ep))
 
     mgr.log("Evaluating...")
     avg_r, avg_l, success = evaluate_agent(env, agent,
@@ -211,7 +223,7 @@ def run(args):
 
     mgr.save_results(results)
     mgr.save_model(agent)
-    if mgr.save_best_model(agent, avg_r):
+    if mgr.save_best_model(agent, success):
         mgr.log("Saved as best-eval checkpoint.")
     mgr.save_curves(metrics.episodes)
     mgr.save_visitation(traj.trajectories, env)

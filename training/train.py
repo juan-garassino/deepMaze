@@ -11,7 +11,14 @@ from dtqn_agent import DTQNAgent
 from maze import MazeEnvironment
 from ppo_agent import PPOAgent
 from q_agent import QAgent
-from viz_events import EpisodeEvent, EventBus, PolicyEvent, RunEvent, StepEvent
+from viz_events import (
+    EpisodeEvent,
+    EvalEvent,
+    EventBus,
+    PolicyEvent,
+    RunEvent,
+    StepEvent,
+)
 
 
 def create_agent(agent_type: str, env: MazeEnvironment, **kwargs):
@@ -68,7 +75,10 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
                 emit_q_values: bool = False,
                 random_start: bool = False,
                 should_stop=None,
-                regenerate_every: int | None = None):
+                regenerate_every: int | None = None,
+                eval_every: int | None = None,
+                eval_episodes: int = 10,
+                on_eval=None):
     if bus is not None:
         bus.publish(RunEvent(kind="start",
                              info={"num_episodes": num_episodes,
@@ -126,6 +136,21 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
         # epsilon is the value actually used during this episode).
         if hasattr(agent, "on_episode_end"):
             agent.on_episode_end()
+
+        # Periodic greedy eval — drives best-checkpoint selection and the
+        # curriculum advancement gate. Runs after on_episode_end so the
+        # memory agents' episode is already flushed (eval's
+        # on_episode_start would otherwise commit a partial episode).
+        if eval_every and (episode + 1) % eval_every == 0:
+            mean_r, mean_l, succ = evaluate_agent(env, agent,
+                                                  eval_episodes, max_steps)
+            if bus is not None:
+                bus.publish(EvalEvent(episode=episode, mean_reward=mean_r,
+                                      mean_length=mean_l, success_rate=succ))
+            if on_eval is not None:
+                on_eval(episode, {"mean_reward": mean_r,
+                                  "mean_length": mean_l,
+                                  "success_rate": succ})
 
     if hasattr(agent, "flush"):
         agent.flush()
