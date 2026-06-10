@@ -22,6 +22,12 @@ variable "ghcr_owner" {
   default     = "juan-garassino"
 }
 
+variable "ghcr_remote_repo" {
+  description = "Artifact Registry REMOTE repository proxying ghcr.io (created once, out of band — see README)."
+  type        = string
+  default     = "ghcr-remote"
+}
+
 variable "image_name" {
   description = "GHCR repository name for the inference backend."
   type        = string

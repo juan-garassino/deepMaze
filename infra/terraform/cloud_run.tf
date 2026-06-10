@@ -1,7 +1,13 @@
 // Cloud Run v2 service for the inference backend.
-// Image is pulled from GHCR (workspace policy: deep-* on GHCR, not GAR).
-// Public package on GHCR ⇒ no registry-auth needed; if you ever flip the
-// package to private, add a secret reference here.
+// The image LIVES on GHCR (workspace policy: deep-* on GHCR, not GAR), but
+// Cloud Run cannot pull ghcr.io directly — it only accepts Artifact
+// Registry / gcr.io / Docker Hub. We pull through an Artifact Registry
+// REMOTE repository that proxies ghcr.io (one-time setup, see README):
+//   gcloud artifacts repositories create ghcr-remote \
+//     --repository-format=docker --mode=remote-repository \
+//     --remote-docker-repo=https://ghcr.io \
+//     --location=<region> --project=<project>
+// Public GHCR package ⇒ no upstream credentials needed on the remote repo.
 
 resource "google_cloud_run_v2_service" "backend" {
   name     = var.service_name
@@ -16,7 +22,7 @@ resource "google_cloud_run_v2_service" "backend" {
     service_account = google_service_account.backend.email
 
     containers {
-      image = "ghcr.io/${var.ghcr_owner}/${var.image_name}:${var.image_tag}"
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.ghcr_remote_repo}/${var.ghcr_owner}/${var.image_name}:${var.image_tag}"
 
       ports {
         container_port = 8000
@@ -84,6 +90,13 @@ resource "google_cloud_run_v2_service" "backend" {
   traffic {
     type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
     percent = 100
+  }
+
+  // deploy.yml replaces the service with a new image on every merge; TF owns
+  // the infrastructure, CI owns the image. Without this, the next apply
+  // would roll the live revision back to var.image_tag.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image]
   }
 }
 

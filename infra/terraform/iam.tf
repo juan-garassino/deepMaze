@@ -16,7 +16,11 @@ resource "google_storage_bucket_iam_member" "backend_reader" {
   condition {
     title       = "deepmaze-prefix-only"
     description = "Limit reads to gs://${var.assets_bucket}/${var.assets_prefix}*"
-    expression  = "resource.name.startsWith(\"projects/_/buckets/${var.assets_bucket}/objects/${var.assets_prefix}\")"
+    // storage.objects.list is evaluated against the BUCKET resource, which
+    // never matches the objects/ prefix — without the second clause,
+    // sync_assets.py's list_blobs(prefix=...) gets a 403 and the service
+    // boots with zero models.
+    expression = "resource.name.startsWith(\"projects/_/buckets/${var.assets_bucket}/objects/${var.assets_prefix}\") || api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"${var.assets_prefix}\")"
   }
 }
 
@@ -30,6 +34,22 @@ resource "google_project_iam_member" "backend_trace" {
 // impersonate the backend SA. The principalSet:// member binds at the POOL
 // (not provider) level — the provider's own attribute_condition is what
 // actually scopes which repos can mint tokens.
+// deploy.yml authenticates AS this SA (via WIF) and then runs
+// `gcloud run services replace` + `add-iam-policy-binding`: that needs
+// run.admin on the project and actAs on the runtime SA (an SA does not
+// implicitly have actAs on itself).
+resource "google_project_iam_member" "backend_run_admin" {
+  project = var.project_id
+  role    = "roles/run.admin"
+  member  = "serviceAccount:${google_service_account.backend.email}"
+}
+
+resource "google_service_account_iam_member" "backend_self_actas" {
+  service_account_id = google_service_account.backend.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.backend.email}"
+}
+
 resource "google_service_account_iam_member" "wif_impersonation" {
   service_account_id = google_service_account.backend.name
   role               = "roles/iam.workloadIdentityUser"

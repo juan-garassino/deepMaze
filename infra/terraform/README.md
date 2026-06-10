@@ -5,10 +5,10 @@ Minimal Terraform for the deepMaze inference backend on `garassino-ml` / `europe
 | File | Resources |
 |---|---|
 | `main.tf` | Provider + GCS backend at `gs://garassino-op-tf-state/deepmaze/` |
-| `variables.tf` | project_id, region, image_tag, ghcr_owner, image_name, service_name, assets_bucket, assets_prefix, cors_origins, wif_pool_id, github_repo |
+| `variables.tf` | project_id, region, image_tag, ghcr_owner, ghcr_remote_repo, image_name, service_name, assets_bucket, assets_prefix, cors_origins, wif_pool_id, github_repo |
 | `storage.tf` | Shared `garassino-ml-artifacts` bucket — **imported, not created**, `prevent_destroy=true` |
-| `iam.tf` | Backend SA + bucket reader (prefix-scoped) + Trace agent + WIF impersonation binding |
-| `cloud_run.tf` | Cloud Run v2 service from GHCR + public invoker IAM |
+| `iam.tf` | Backend SA + bucket reader (prefix-scoped, incl. list via objectListPrefix) + Trace agent + run.admin/actAs for the CI deploy + WIF impersonation binding |
+| `cloud_run.tf` | Cloud Run v2 service (image via AR remote repo proxying GHCR) + public invoker IAM |
 | `outputs.tf` | `cloud_run_url`, `sa_email`, `bucket_name`, `assets_prefix` |
 
 ## One-time setup
@@ -26,6 +26,16 @@ Minimal Terraform for the deepMaze inference backend on `garassino-ml` / `europe
      --project=garassino-ml --location=europe-west1 \
      --uniform-bucket-level-access
    ```
+4. **Artifact Registry remote repo proxying GHCR** — Cloud Run cannot pull
+   `ghcr.io` directly; the image keeps living on GHCR (workspace policy) and
+   Cloud Run pulls it through this proxy:
+   ```bash
+   gcloud artifacts repositories create ghcr-remote \
+     --repository-format=docker --mode=remote-repository \
+     --remote-docker-repo=https://ghcr.io \
+     --location=europe-west1 --project=garassino-ml
+   ```
+   The GHCR package must be **public** (no upstream credentials configured).
 
 ## Show
 
@@ -36,11 +46,13 @@ terraform init
 # One-time: import the shared bucket so TF tracks it without trying to create it.
 terraform import google_storage_bucket.artifacts garassino-ml-artifacts
 
-# Push the inference image to GHCR first (from repo root):
-#   make push
-# Then apply with the new tag:
+# Push the inference image to GHCR first (from repo root) and flip the
+# package to public:
+#   make push-backend     # NOT `make push` — that builds the RunPod TRAINING image
+# Then apply. Use image_tag=latest for the first apply (deploy.yml takes
+# over per-SHA tags on merge; terraform ignores image drift afterwards):
 terraform apply \
-  -var "image_tag=$(git rev-parse --short HEAD)" \
+  -var "image_tag=latest" \
   -var "wif_pool_id=projects/634336216563/locations/global/workloadIdentityPools/gh-actions"
 ```
 

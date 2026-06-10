@@ -5,7 +5,9 @@
 #   IMAGE, SA_EMAIL, ASSETS_BUCKET, ASSETS_PREFIX, GCP_PROJECT_ID, CORS_ORIGINS
 # ASSETS_BUCKET is the shared `garassino-ml-artifacts` bucket; ASSETS_PREFIX
 # (e.g. `deepmaze/`) selects the per-project subpath sync_assets.py walks.
-# If CORS_ORIGINS is empty, server.py defaults to `*` (dev-only).
+# If CORS_ORIGINS is UNSET, server.py defaults to `*` (dev-only). Beware:
+# set-but-EMPTY renders value:"" → server splits to [""] → all origins
+# blocked. Always set it explicitly for deploys.
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:

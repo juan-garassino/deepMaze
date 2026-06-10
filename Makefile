@@ -88,6 +88,19 @@ push: build
 	@echo "Then: make runpod                  (train-only)"
 	@echo "   or: make runpod-improve API_KEY=sk-ant-...  (self-improve)"
 
+# Cloud Run inference image (Dockerfile.prod → ghcr.io/.../deepmaze-backend).
+# Needed before the FIRST `terraform apply` — CI builds it on merge after that.
+.PHONY: push-backend
+push-backend:
+	docker build -f Dockerfile.prod -t deepmaze-backend .
+	docker tag deepmaze-backend $(REGISTRY)/deepmaze-backend:latest
+	docker push $(REGISTRY)/deepmaze-backend:latest
+	@echo ""
+	@echo "=== Pushed $(REGISTRY)/deepmaze-backend:latest ==="
+	@echo "First push? Flip the package to PUBLIC (Cloud Run pulls it via the"
+	@echo "AR remote repo without upstream credentials):"
+	@echo "  https://github.com/users/$(GH_USERNAME)/packages/container/deepmaze-backend/settings"
+
 # ---------------------------------------------------------------------------
 # Docker — run locally
 # ---------------------------------------------------------------------------

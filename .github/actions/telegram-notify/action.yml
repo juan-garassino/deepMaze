@@ -24,6 +24,10 @@ runs:
   steps:
     - name: Send Telegram message
       shell: bash
+      env:
+        # Interpolating the commit message directly into the script body
+        # would let a crafted commit message inject shell — pass via env.
+        COMMIT_MSG: ${{ github.event.head_commit.message }}
       run: |
         set -euo pipefail
 
@@ -36,7 +40,7 @@ runs:
 
         # Build the message body. Markdown V1 (kept simple — escapes only `_*[]()`).
         # github.event.head_commit.message is multi-line; take first line only.
-        FIRST_LINE="$(echo "${{ github.event.head_commit.message }}" | head -n1 | head -c 120)"
+        FIRST_LINE="$(echo "${COMMIT_MSG:-}" | head -n1 | head -c 120)"
 
         MSG="${EMOJI} *deepMaze · ${{ inputs.title }}* — \`${{ inputs.status }}\` on \`${{ github.ref_name }}\`
         \`${FIRST_LINE:-(no commit msg)}\`

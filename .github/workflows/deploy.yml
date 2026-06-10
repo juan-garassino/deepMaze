@@ -15,10 +15,12 @@ env:
   CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE }}
   ASSETS_BUCKET: ${{ vars.ASSETS_BUCKET }}
   SA_EMAIL: ${{ secrets.CLOUD_RUN_SA_EMAIL }}
-  # Image now lives on GHCR (workspace policy: deep-* family → ghcr.io).
-  # GAR is reserved for career-navigator (garassino-ai). Public package
-  # so Cloud Run can pull without registry-auth.
+  # Image lives on GHCR (workspace policy: deep-* family → ghcr.io; GAR is
+  # reserved for career-navigator). Cloud Run cannot pull ghcr.io directly,
+  # so the service references the Artifact Registry REMOTE repo that
+  # proxies ghcr.io (one-time setup — see infra/terraform/README.md).
   IMAGE: ghcr.io/${{ github.repository_owner }}/deepmaze-backend
+  DEPLOY_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/ghcr-remote/${{ github.repository_owner }}/deepmaze-backend
 
 permissions:
   contents: read
@@ -76,7 +78,7 @@ jobs:
           envsubst < infra/cloudrun/service.yaml > /tmp/service.rendered.yaml
           cat /tmp/service.rendered.yaml
         env:
-          IMAGE: ${{ env.IMAGE }}:${{ github.sha }}
+          IMAGE: ${{ env.DEPLOY_IMAGE }}:${{ github.sha }}
           SA_EMAIL: ${{ env.SA_EMAIL }}
           ASSETS_BUCKET: ${{ env.ASSETS_BUCKET }}
           ASSETS_PREFIX: ${{ vars.ASSETS_PREFIX }}
@@ -86,16 +88,17 @@ jobs:
       - name: Deploy Cloud Run service
         run: |
           gcloud run services replace /tmp/service.rendered.yaml \
-            --region "${GCP_REGION}" --quiet
+            --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" --quiet
           gcloud run services add-iam-policy-binding "${CLOUD_RUN_SERVICE}" \
-            --region "${GCP_REGION}" \
+            --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" \
             --member="allUsers" --role="roles/run.invoker" --quiet
 
       - name: Resolve Cloud Run URL
         id: url
         run: |
           URL=$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
-                  --region "${GCP_REGION}" --format='value(status.url)')
+                  --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" \
+                  --format='value(status.url)')
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
       - name: Slack — deploy succeeded
