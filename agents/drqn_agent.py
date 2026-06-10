@@ -14,19 +14,13 @@ sample sub-sequences, burn-in then learn.
 
 from __future__ import annotations
 
-import random
-from collections import deque
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from base_agent import BaseAgent
 from encoders import GridAttnEncoder
-
-# Per-step buffer record: (obs, prev_action, action, reward, next_obs, done).
-# prev_action is the action taken into this state; -1 means "no prev action".
-NO_ACTION = -1
+from episode_buffer import NO_ACTION, EpisodeBuffer
 
 
 class DRQN(nn.Module):
@@ -54,54 +48,6 @@ class DRQN(nn.Module):
         z = torch.cat([feats, a_emb], dim=-1)
         out, hidden = self.lstm(z, hidden)
         return self.head(out), hidden
-
-
-class EpisodeBuffer:
-    """Stores complete episodes with prev_action tracking."""
-
-    def __init__(self, capacity: int):
-        self.capacity = capacity
-        self.episodes: deque = deque(maxlen=capacity)
-        self._current: list[tuple] = []
-        self._prev_a: int = NO_ACTION
-
-    def reset_episode(self):
-        if self._current:
-            self.episodes.append(self._current)
-        self._current = []
-        self._prev_a = NO_ACTION
-
-    def add_step(self, obs, action, reward, next_obs, done):
-        self._current.append((
-            np.asarray(obs), int(self._prev_a), int(action),
-            float(reward), np.asarray(next_obs), float(done),
-        ))
-        self._prev_a = int(action)
-        if done:
-            self.episodes.append(self._current)
-            self._current = []
-            self._prev_a = NO_ACTION
-
-    def __len__(self):
-        return len(self.episodes)
-
-    def sample(self, batch_size: int, seq_len: int):
-        eps = random.sample(self.episodes, min(batch_size, len(self.episodes)))
-        seqs = []
-        for ep in eps:
-            if len(ep) <= seq_len:
-                pad = [ep[-1]] * (seq_len - len(ep))
-                seqs.append(ep + pad)
-            else:
-                start = random.randint(0, len(ep) - seq_len)
-                seqs.append(ep[start:start + seq_len])
-        obs = np.stack([[s[0] for s in seq] for seq in seqs])
-        pa = np.array([[s[1] for s in seq] for seq in seqs], dtype=np.int64)
-        act = np.array([[s[2] for s in seq] for seq in seqs], dtype=np.int64)
-        rew = np.array([[s[3] for s in seq] for seq in seqs], dtype=np.float32)
-        nobs = np.stack([[s[4] for s in seq] for seq in seqs])
-        done = np.array([[s[5] for s in seq] for seq in seqs], dtype=np.float32)
-        return obs, pa, act, rew, nobs, done
 
 
 class DRQNAgent(BaseAgent):
@@ -138,7 +84,13 @@ class DRQNAgent(BaseAgent):
     def on_episode_start(self):
         self._hidden = None
         self._last_action = NO_ACTION
-        self.buf.reset_episode()
+        self.buf.start_episode()
+
+    def on_episode_end(self):
+        # Flush truncated episodes (and the run's final episode) into the
+        # buffer, then let the base class decay epsilon.
+        self.buf.end_episode()
+        super().on_episode_end()
 
     def _obs_tensor(self, obs):
         x = np.asarray(obs).reshape(1, 1, self.h, self.w)
@@ -167,15 +119,15 @@ class DRQNAgent(BaseAgent):
             self._learn()
 
     def _learn(self):
-        obs, pa, act, rew, nobs, dn = self.buf.sample(
-            self.batch_size, self.seq_len)
-        B, T, H, W = obs.shape
-        obs_t = torch.from_numpy(obs).long().to(self.device)
-        nobs_t = torch.from_numpy(nobs).long().to(self.device)
-        pa_t = torch.from_numpy(pa).to(self.device)
-        act_t = torch.from_numpy(act).to(self.device)
-        rew_t = torch.from_numpy(rew).to(self.device)
-        dn_t = torch.from_numpy(dn).to(self.device)
+        batch = self.buf.sample(self.batch_size, self.seq_len)
+        obs_t = torch.from_numpy(batch["obs"]).long().to(self.device)
+        nobs_t = torch.from_numpy(batch["next_obs"]).long().to(self.device)
+        pa_t = torch.from_numpy(batch["prev_action"]).to(self.device)
+        act_t = torch.from_numpy(batch["action"]).to(self.device)
+        rew_t = torch.from_numpy(batch["reward"]).to(self.device)
+        dn_t = torch.from_numpy(batch["done"]).to(self.device)
+        mask_t = torch.from_numpy(batch["mask"]).to(self.device)
+        T = obs_t.shape[1]
         # next-step "prev action" is the current action at each step
         npa_t = act_t
 
@@ -192,10 +144,14 @@ class DRQNAgent(BaseAgent):
         a_use = act_t[:, bi:]
         r_use = rew_t[:, bi:]
         d_use = dn_t[:, bi:]
+        m_use = mask_t[:, bi:]
         current_q = q_seq.gather(2, a_use.unsqueeze(-1)).squeeze(-1)
         target_q = r_use + (1 - d_use) * self.gamma * max_next
 
-        loss = nn.functional.mse_loss(current_q, target_q)
+        # Masked MSE: padded positions (repeats of the terminal transition)
+        # carry no gradient.
+        td = current_q - target_q
+        loss = (m_use * td * td).sum() / m_use.sum().clamp(min=1.0)
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
