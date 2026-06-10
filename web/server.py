@@ -351,6 +351,10 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
                 generator=cfg.get("generator", "random"),
                 n_lava=cfg.get("n_lava", 0),
                 lava_reward=cfg.get("lava_reward", -1.0),
+                bump_penalty=cfg.get("bump_penalty", -0.1),
+                # aux changes the obs shape — required or load_state_dict
+                # mismatches against the checkpoint
+                aux_features=cfg.get("aux_features", False),
                 partial_view=cfg.get("partial"),
                 n_treasures=cfg.get("n_treasures", 1),
                 collect_all=cfg.get("collect_all", False),
@@ -364,7 +368,10 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
                     env.maze = m.copy()
                     env.reset(at_start=True)
 
-            agent_kw = {}
+            # Effective hyperparameter overrides from training (architecture
+            # sizes etc.); create_agent drops unknown keys, so stale entries
+            # from old bundles are safe.
+            agent_kw = dict(cfg.get("agent_hp") or {})
             if cfg.get("net"):
                 agent_kw["net"] = cfg["net"]
             agent = train_mod.create_agent(cfg["agent_type"], env, **agent_kw)

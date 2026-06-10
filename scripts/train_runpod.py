@@ -148,6 +148,11 @@ def _module_of(agent):
 
 
 def _warm_start(agent, path: str) -> None:
+    if path.endswith(".pkl"):  # tabular Q
+        import pickle
+        with open(path, "rb") as f:
+            agent.Q.update(pickle.load(f))
+        return
     sd = torch.load(path, map_location=getattr(agent, "device", "cpu"), weights_only=True)
     _module_of(agent).load_state_dict(sd)
     if hasattr(agent, "target_model"):
@@ -250,8 +255,10 @@ def train_stage(agent_type: str, run_name: str,
         if m["success_rate"] > best["succ"]:
             best["succ"] = m["success_rate"]
             best["episode"] = ep
-            best["sd"] = {k: v.detach().cpu().clone()
-                          for k, v in _module_of(agent).state_dict().items()}
+            module = _module_of(agent)
+            if module is not None:
+                best["sd"] = {k: v.detach().cpu().clone()
+                              for k, v in module.state_dict().items()}
 
     eval_every = EVAL_EVERY or max(50, num_episodes // 10)
 
@@ -305,9 +312,17 @@ def train_stage(agent_type: str, run_name: str,
         policy_snapshot_every=50, live=False, live_web=False, web_port=8000,
         run_id=run_id, run_name=run_name,
         random_start=RANDOM_START, resume=None, eval_maze="same", eval_seeds=1,
+        agent_hp=overrides,
     ), indent=2))
 
-    torch.save(_module_of(agent).state_dict(), out_dir / "model.pt")
+    module = _module_of(agent)
+    if module is not None:
+        model_path = out_dir / "model.pt"
+        torch.save(module.state_dict(), model_path)
+    else:  # tabular Q
+        import pickle
+        model_path = out_dir / "model.pkl"
+        model_path.write_bytes(pickle.dumps(dict(agent.Q)))
     best_path = None
     if best["sd"] is not None:
         best_path = out_dir / "model.best.pt"
@@ -324,7 +339,7 @@ def train_stage(agent_type: str, run_name: str,
         "agent_type": agent_type, "run_name": run_name, "run_id": run_id,
         "eval_success_rate": succ, "eval_mean_reward": mean_r,
         "best_success_rate": best["succ"],
-        "model_path": str(out_dir / "model.pt"),
+        "model_path": str(model_path),
         "best_model_path": str(best_path) if best_path else None,
     }
 

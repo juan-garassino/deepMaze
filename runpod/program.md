@@ -25,17 +25,26 @@ Maximize `eval_success_rate` of the last stage in the curriculum. The baseline n
 - Read MLflow runs from `${OUTPUT_BASE}/mlruns/` (file store). You can use `mlflow.search_runs()` from Python, or just grep the YAML/JSON inside the run dirs.
 - Use `git` — each iteration commits to branch `claude-improve`. The user reviews/cherry-picks at the end.
 
-## Known structural issues (start here)
+## Known structural issues (status as of 2026-06-10)
 
-These are pre-existing bugs in the repo, not subtle ones. Fix the obvious one first, see if it moves the needle, before going deeper:
+1. **[FIXED] Epsilon decay is per-episode now.** `BaseAgent.on_episode_end()`
+   decays once per episode; `train_agent` calls it after publishing the
+   `EpisodeEvent`. Do NOT re-add decay inside `update()`. If exploration
+   still collapses too early on long runs, tune `exploration_decay`
+   (0.995/episode default → floor ~ep 600; 0.998 → ~ep 1500).
 
-1. **Epsilon decay is per-step, not per-episode.** Look at `agents/drqn_agent.py::update`, `agents/dtqn_agent.py::update`, `agents/q_agent.py::update`, `agents/dqn_agent.py::update`. The `self.epsilon *= self.epsilon_decay` line fires every step, so on a 1000-step episode, ε collapses to `min_epsilon` inside the first episode. Move it to fire only on `done`, or to a new `on_episode_end()` hook called from `training/train.py::train_agent`'s outer loop.
-
-2. **Default `buffer_capacity=200`** in `config/hyperparameters.py` is tiny — on 600-step episodes that's 1/3 of one episode. Bump to ~50000 for DRQN/DTQN defaults.
+2. **[NOT A BUG] `buffer_capacity` counts EPISODES, not transitions** for
+   DRQN/DTQN (`utils/episode_buffer.py`). The default 200 episodes ≈ 120k
+   transitions at 600 steps. Do NOT bump it to 50000 — that's 50k *episodes*
+   (gigabytes of observations). DQN's `ReplayBuffer` counts transitions.
 
 3. **`min_epsilon=0.05`** with random-action over 4 actions = 1.25% chance per step to random-walk into a bad cell even when policy is good. Could lower to 0.01.
 
-Fix any of these in iteration 1, retrain, observe.
+Other levers now available (all opt-in env vars, see `scripts/train_runpod.py`):
+`REWARD_SHAPING` (potential-based, toward nearest remaining treasure),
+`AUX_FEATURES` (position + treasure direction/distance in the obs),
+`BUMP_PENALTY`, `RANDOM_START`, `ADVANCE_THRESHOLD` (curriculum gate),
+`EVAL_EVERY` (periodic eval → `model.best.pt`).
 
 ## The loop
 

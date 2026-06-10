@@ -19,11 +19,11 @@ Ported and modernized from two local references; **do not** edit those reference
 ```
 deepMaze/
 ├── agents/       base_agent / q_agent / dqn_agent / ppo_agent / drqn_agent / dtqn_agent / nets / encoders
-├── config/       (reserved)
+├── config/       hyperparameters.py — per-agent default dataclasses (defaults_for)
 ├── environment/  maze.py — MazeEnvironment + RenderMaze
 ├── training/     train.py + recorders.py
 ├── tests/        pytest suite
-├── utils/        manager.py + viz_events.py + visualizations.py + replay_buffer.py
+├── utils/        manager.py + viz_events.py + visualizations.py + replay_buffer.py + episode_buffer.py
 ├── web/          FastAPI server + static/ + otel.py (Cloud Trace instrumentation)
 ├── notebooks/    train_agent.ipynb — dual-mode (Colab/local) DRQN/DTQN trainer + curriculum cell
 ├── flows/        Prefect flows — retrain / promote / smoke-test
@@ -38,7 +38,7 @@ deepMaze/
 
 ## Architectural seams
 
-**EventBus** (`utils/viz_events.py`). Single typed pub/sub channel — `StepEvent`, `EpisodeEvent`, `PolicyEvent`, `RunEvent`. Training emits; recorders consume. Adding a viz target = one `bus.subscribe(handler)`. Never plumb metrics through return values.
+**EventBus** (`utils/viz_events.py`). Single typed pub/sub channel — `StepEvent`, `EpisodeEvent`, `EvalEvent`, `PolicyEvent`, `RunEvent`. Training emits; recorders consume. Adding a viz target = one `bus.subscribe(handler)`. Never plumb metrics through return values.
 
 **Recorders** (`training/recorders.py`). `MetricsCollector`, `TrajectoryCollector`, `TqdmTail`, `ReplayRecorder`. Pure subscribers; stateless w.r.t. training.
 
@@ -170,7 +170,7 @@ Two services orchestrated by `docker-compose.yml` (dev):
 | backend  | `Dockerfile`           | 8000 | `./maze_rl_runs`, `./assets`       |
 | frontend | `Dockerfile.frontend`  | 8080 | (none)                             |
 
-`Dockerfile.prod` builds the slim Cloud Run image: drops dev deps, adds gunicorn + OTEL + gsutil, and `docker/entrypoint.prod.sh` syncs `gs://${ASSETS_BUCKET}/` → `/app/assets/` at startup. CI builds + pushes it to Artifact Registry via `.github/workflows/deploy.yml`.
+`Dockerfile.prod` builds the slim Cloud Run image: drops dev deps, adds gunicorn + OTEL + google-cloud-storage (no gsutil), and `docker/entrypoint.prod.sh` syncs `gs://${ASSETS_BUCKET}/` → `/app/assets/` at startup. CI builds + pushes it to Artifact Registry via `.github/workflows/deploy.yml`.
 
 The frontend is plain nginx serving `web/static`. `${API_BASE_URL}` is
 substituted into `web/static/config.js` at container start; the JS reads
@@ -201,8 +201,11 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 - The web SSE handler subscribes a `queue.Queue`; when the queue saturates (>4096 events) the oldest is dropped to keep the live feed responsive. Saved artifacts are unaffected — they come from in-process subscribers.
 - Tabular Q-learning's policy heatmap uses each cell's observation as a key; unvisited cells show `NaN`. The `rollout.png` (behavioral viz) is the right answer for those agents.
 - Sprite sheet format: 16×16 source tiles; required sprite indices: `0=HOLE, 1=LAND, 2=LAVA, 3=EXIT, 4=AGENT`. Cell-value AGENT_BASE is 5 (agents are `5 + agent_index`).
-- Pretrained-model `config.json` must match the architecture: shape mismatches at `load_state_dict` time will raise.
+- Pretrained-model `config.json` must match the architecture. Bundles exported post-2026-06-10 record the effective hyperparameter overrides under `agent_hp` plus `aux_features`/`bump_penalty`, and `/api/inference` replays them; older bundles without `agent_hp` only load if they used default architectures.
 - Multi-treasure: `n_treasures > 1` places extras on reachable LAND; lava placement excludes all start→treasure paths. `collect_all=True` keeps the episode running until every treasure is consumed.
+- Epsilon decays once per EPISODE via `BaseAgent.on_episode_end()` (default 0.995 → floor ~ep 600/920; `--exploration_decay 0.998` for 3000+ ep runs). Never decay inside `update()` — that was the bug that collapsed exploration inside episode 0.
+- `buffer_capacity` counts EPISODES for DRQN/DTQN (`utils/episode_buffer.py`, default 200 ≈ 120k transitions at 600 steps) but TRANSITIONS for DQN's `ReplayBuffer`.
+- Opt-in env features (off by default; curriculum surfaces enable them): `--reward_shaping` (potential-based, BFS distance to nearest remaining treasure), `--aux_features` (appends position + treasure direction/distance + remaining-fraction to the obs; flat float32, rejected for tabular q), `--bump_penalty` (default −0.1; −0.01 on big mazes). `--max_steps` defaults to `3·(w+h)·n_treasures(collect_all)`. `--eval_every N` runs periodic greedy eval and drives `model.best.pt` selection.
 
 ## MLOps surfaces
 
