@@ -43,13 +43,11 @@ for sub in ("agents", "environment", "training", "utils", "config"):
 
 import mlflow
 import torch
-
 from maze import MazeEnvironment, RenderMaze
 from recorders import ReplayRecorder
 from seeding import seed_everything
 from train import create_agent, evaluate_agent, simulate_episode, train_agent
 from viz_events import EpisodeEvent, EventBus
-
 
 # ─────────────────────────── config from env ────────────────────────────
 
@@ -298,7 +296,7 @@ def main():
 
     agents = [a.strip() for a in AGENTS_TO_RUN.split(",") if a.strip()]
     print(_hr("█"))
-    print(f"  deepMaze RunPod training")
+    print("  deepMaze RunPod training")
     print(f"  output     : {OUTPUT_BASE}")
     print(f"  mlflow     : {tracking_uri}")
     print(f"  agents     : {agents}")

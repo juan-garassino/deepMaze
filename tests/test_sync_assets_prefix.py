@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import os
 import sys
 import types
 from pathlib import Path
-from unittest import mock
 
 
 def _load_sync_module(tmp_path: Path):
