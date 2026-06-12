@@ -77,11 +77,18 @@ body.app::after {
 
 .three-pane {
   display: grid;
-  grid-template-columns: minmax(480px, 580px) minmax(300px, 380px) 1fr;
+  grid-template-columns: minmax(480px, 1fr) minmax(320px, 420px);
+  grid-template-rows: minmax(0, 1fr) 220px;
+  grid-template-areas:
+    "board  controls"
+    "charts charts";
   gap: 12px;
   padding: 12px;
   height: calc(100vh - 50px);
 }
+.board { grid-area: board; }
+.controls-pane { grid-area: controls; }
+.charts { grid-area: charts; }
 .pane {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -250,9 +257,9 @@ button.launch:active { transform: translateY(0); }
 .overlay-toggles { display: flex; gap: 14px; font-size: 11px; color: var(--fg-dim); }
 .overlay-toggles input { accent-color: var(--accent); }
 
-/* charts */
+/* charts — one telemetry row across the bottom */
 .charts {
-  display: grid; grid-template-rows: 1fr 1fr; grid-template-columns: 1fr 1fr;
+  display: grid; grid-template-rows: 1fr; grid-template-columns: repeat(4, 1fr);
   gap: 8px; padding: 8px;
 }
 .chart-cell {
