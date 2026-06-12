@@ -17,10 +17,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from base_agent import BaseAgent
 from encoders import GridAttnEncoder
-from episode_buffer import NO_ACTION, EpisodeBuffer
+from episode_buffer import NO_ACTION
+from recurrent import RecurrentQAgent
 
 
 class DRQN(nn.Module):
@@ -62,63 +61,39 @@ class DRQN(nn.Module):
         return self.head(out), hidden
 
 
-class DRQNAgent(BaseAgent):
+class DRQNAgent(RecurrentQAgent):
     def __init__(self, state_size, action_size, grid_shape, learning_rate=1e-3,
                  discount_factor=0.99, exploration_rate=1.0,
                  exploration_decay=0.995, min_epsilon=0.05,
                  batch_size=8, seq_len=8, burn_in=4, target_sync=100,
                  buffer_capacity=200, lstm_hidden=128, enc_dim=64,
                  action_emb_dim=16, aux_dim=0, learn_every=1):
-        super().__init__(action_size)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.h, self.w = grid_shape
-        self.aux_dim = aux_dim
-        self.gamma = discount_factor
-        self.epsilon = exploration_rate
-        self.epsilon_decay = exploration_decay
-        self.min_epsilon = min_epsilon
-        self.batch_size = batch_size
-        self.seq_len = seq_len
-        self.burn_in = burn_in
-        self.target_sync = target_sync
-        self.learn_every = max(1, int(learn_every))
-        self._step = 0
-
+        super().__init__(action_size, grid_shape,
+                         learning_rate=learning_rate,
+                         discount_factor=discount_factor,
+                         exploration_rate=exploration_rate,
+                         exploration_decay=exploration_decay,
+                         min_epsilon=min_epsilon, batch_size=batch_size,
+                         seq_len=seq_len, burn_in=burn_in,
+                         target_sync=target_sync,
+                         buffer_capacity=buffer_capacity,
+                         learn_every=learn_every, aux_dim=aux_dim)
         self.model = DRQN(self.h, self.w, action_size, enc_dim, lstm_hidden,
                           action_emb_dim, aux_dim).to(self.device)
         self.target_model = DRQN(self.h, self.w, action_size, enc_dim,
                                  lstm_hidden, action_emb_dim,
                                  aux_dim).to(self.device)
-        self.target_model.load_state_dict(self.model.state_dict())
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        self.buf = EpisodeBuffer(buffer_capacity)
+        self._finalize_models()
         self._hidden = None
         self._last_action = NO_ACTION
 
     # ------------------------------------------------------------------
-    def on_episode_start(self):
+    def _on_episode_boundary(self):
         self._hidden = None
         self._last_action = NO_ACTION
-        self.buf.start_episode()
 
-    def on_episode_end(self):
-        # Flush truncated episodes (and the run's final episode) into the
-        # buffer, then let the base class decay epsilon.
-        self.buf.end_episode()
-        super().on_episode_end()
-
-    def _obs_tensor(self, obs):
-        if self.aux_dim:
-            x = np.asarray(obs, dtype=np.float32).reshape(1, 1, -1)
-            return torch.from_numpy(x).to(self.device)
-        x = np.asarray(obs).reshape(1, 1, self.h, self.w)
-        return torch.from_numpy(x).long().to(self.device)
-
-    def _seq_tensor(self, arr):
-        """Batch of stored observations → model input tensor."""
-        if self.aux_dim:
-            return torch.from_numpy(arr.astype(np.float32)).to(self.device)
-        return torch.from_numpy(arr).long().to(self.device)
+    def _step_extra(self):
+        return getattr(self, "_hidden_pre", None)
 
     def _hidden_snapshot(self):
         """Hidden state going INTO the current step, as one float32 array
@@ -145,17 +120,6 @@ class DRQNAgent(BaseAgent):
             a = int(q.squeeze(0).squeeze(0).argmax().item())
         self._last_action = a
         return a
-
-    def update(self, state, action, reward, next_state, done, truncated=False):
-        self.buf.add_step(state, action, reward, next_state, done,
-                          extra=getattr(self, "_hidden_pre", None))
-        self._step += 1
-        if done:
-            self._hidden = None
-            self._last_action = NO_ACTION
-        if (len(self.buf) >= max(2, self.batch_size)
-                and self._step % self.learn_every == 0):
-            self._learn()
 
     def _learn(self):
         batch = self.buf.sample(self.batch_size, self.seq_len)
@@ -207,18 +171,7 @@ class DRQNAgent(BaseAgent):
         current_q = q_seq.gather(2, a_use.unsqueeze(-1)).squeeze(-1)
         target_q = r_use + (1 - d_use) * self.gamma * max_next
 
-        # Masked MSE: padded positions (repeats of the terminal transition)
-        # carry no gradient.
-        td = current_q - target_q
-        loss = (m_use * td * td).sum() / m_use.sum().clamp(min=1.0)
-        self.optimizer.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-        self.optimizer.step()
-        self.last_loss = float(loss.item())
-
-        if self._step % self.target_sync == 0:
-            self.target_model.load_state_dict(self.model.state_dict())
+        self._optimize(self._masked_td_loss(current_q, target_q, m_use))
 
     # ------------------------------------------------------------------
     def memory_snapshot(self):
@@ -251,7 +204,3 @@ class DRQNAgent(BaseAgent):
         with torch.no_grad():
             q, _ = self.model(x, pa, None)
         return q.squeeze(1).cpu().numpy()
-
-    def policy_snapshot(self):
-        return {k: v.detach().cpu().clone()
-                for k, v in self.model.state_dict().items()}

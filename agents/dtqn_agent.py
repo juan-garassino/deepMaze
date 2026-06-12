@@ -22,10 +22,9 @@ from collections import deque
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from base_agent import BaseAgent
 from encoders import GridAttnEncoder
-from episode_buffer import NO_ACTION, EpisodeBuffer
+from episode_buffer import NO_ACTION
+from recurrent import RecurrentQAgent
 
 
 class TransformerBlock(nn.Module):
@@ -117,7 +116,7 @@ class DTQN(nn.Module):
         return self.blocks[-1].last_attn
 
 
-class DTQNAgent(BaseAgent):
+class DTQNAgent(RecurrentQAgent):
     def __init__(self, state_size, action_size, grid_shape,
                  learning_rate=3e-4, discount_factor=0.99,
                  exploration_rate=1.0, exploration_decay=0.995,
@@ -125,48 +124,30 @@ class DTQNAgent(BaseAgent):
                  target_sync=100, buffer_capacity=200,
                  dim=128, heads=4, layers=2, max_ctx=64, aux_dim=0,
                  learn_every=1):
-        super().__init__(action_size)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.h, self.w = grid_shape
-        self.aux_dim = aux_dim
-        self.gamma = discount_factor
-        self.epsilon = exploration_rate
-        self.epsilon_decay = exploration_decay
-        self.min_epsilon = min_epsilon
-        self.batch_size = batch_size
-        self.seq_len = seq_len
-        self.burn_in = burn_in
-        self.target_sync = target_sync
-        self.learn_every = max(1, int(learn_every))
+        super().__init__(action_size, grid_shape,
+                         learning_rate=learning_rate,
+                         discount_factor=discount_factor,
+                         exploration_rate=exploration_rate,
+                         exploration_decay=exploration_decay,
+                         min_epsilon=min_epsilon, batch_size=batch_size,
+                         seq_len=seq_len, burn_in=burn_in,
+                         target_sync=target_sync,
+                         buffer_capacity=buffer_capacity,
+                         learn_every=learn_every, aux_dim=aux_dim)
         self.max_ctx = max_ctx
-        self._step = 0
-
         self.model = DTQN(self.h, self.w, action_size, dim, heads, layers,
                           max_ctx, aux_dim=aux_dim).to(self.device)
         self.target_model = DTQN(self.h, self.w, action_size, dim, heads,
                                  layers, max_ctx,
                                  aux_dim=aux_dim).to(self.device)
-        self.target_model.load_state_dict(self.model.state_dict())
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-
-        self.buf = EpisodeBuffer(buffer_capacity)
+        self._finalize_models()
         # inference context
         self._ctx_obs: deque = deque(maxlen=max_ctx)
         self._ctx_pa: deque = deque(maxlen=max_ctx)
         self._last_action = NO_ACTION
 
     # ------------------------------------------------------------------
-    def on_episode_start(self):
-        self._clear_context()
-        self.buf.start_episode()
-
-    def on_episode_end(self):
-        # Flush truncated episodes (and the run's final episode) into the
-        # buffer, then let the base class decay epsilon.
-        self.buf.end_episode()
-        super().on_episode_end()
-
-    def _clear_context(self):
+    def _on_episode_boundary(self):
         self._ctx_obs.clear()
         self._ctx_pa.clear()
         self._last_action = NO_ACTION
@@ -182,12 +163,6 @@ class DTQNAgent(BaseAgent):
         return (torch.from_numpy(obs).long().to(self.device),
                 torch.from_numpy(pa).to(self.device))
 
-    def _seq_tensor(self, arr):
-        """Batch of stored observations → model input tensor."""
-        if self.aux_dim:
-            return torch.from_numpy(arr.astype(np.float32)).to(self.device)
-        return torch.from_numpy(arr).long().to(self.device)
-
     def move(self, state):
         self._ctx_obs.append(np.asarray(state))
         self._ctx_pa.append(self._last_action)
@@ -201,15 +176,6 @@ class DTQNAgent(BaseAgent):
             a = int(q_last.argmax().item())
         self._last_action = a
         return a
-
-    def update(self, state, action, reward, next_state, done, truncated=False):
-        self.buf.add_step(state, action, reward, next_state, done)
-        self._step += 1
-        if done:
-            self._clear_context()  # episode already committed by add_step
-        if (len(self.buf) >= max(2, self.batch_size)
-                and self._step % self.learn_every == 0):
-            self._learn()
 
     def _learn(self):
         batch = self.buf.sample(self.batch_size, self.seq_len)
@@ -240,18 +206,8 @@ class DTQNAgent(BaseAgent):
         current_q = q_seq[:, bi:].gather(2, a_use.unsqueeze(-1)).squeeze(-1)
         target_q = rew_t[:, bi:] + (1 - dn_t[:, bi:]) * self.gamma * max_next[:, bi:]
 
-        # Masked MSE: padded positions carry no gradient.
         m_use = mask_t[:, bi:]
-        td = current_q - target_q
-        loss = (m_use * td * td).sum() / m_use.sum().clamp(min=1.0)
-        self.optimizer.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-        self.optimizer.step()
-        self.last_loss = float(loss.item())
-
-        if self._step % self.target_sync == 0:
-            self.target_model.load_state_dict(self.model.state_dict())
+        self._optimize(self._masked_td_loss(current_q, target_q, m_use))
 
     # ------------------------------------------------------------------
     def memory_snapshot(self):
@@ -265,12 +221,7 @@ class DTQNAgent(BaseAgent):
         return {"kind": "attention_row", "data": last_row.tolist()}
 
     def q_values(self, state):
-        if self.aux_dim:
-            x = np.asarray(state, dtype=np.float32).reshape(1, 1, -1)
-            x = torch.from_numpy(x).to(self.device)
-        else:
-            x = np.asarray(state).reshape(1, 1, self.h, self.w)
-            x = torch.from_numpy(x).long().to(self.device)
+        x = self._obs_tensor(state)
         pa = torch.tensor([[NO_ACTION]], dtype=torch.long, device=self.device)
         with torch.no_grad():
             q = self.model(x, pa)
@@ -291,6 +242,3 @@ class DTQNAgent(BaseAgent):
             q = self.model(x, pa)
         return q.squeeze(1).cpu().numpy()
 
-    def policy_snapshot(self):
-        return {k: v.detach().cpu().clone()
-                for k, v in self.model.state_dict().items()}
