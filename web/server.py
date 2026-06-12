@@ -196,6 +196,7 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
                 agent_kw["learn_every"] = int(body.get("learn_every", 1))
             agent = train_mod.create_agent(body.get("agent_type", "q"), env,
                                            **agent_kw)
+            app.state.live = {"agent": agent, "env": env}
             max_steps = body.get("max_steps", 200)
             train_mod.train_agent(
                 env, agent,
@@ -222,6 +223,39 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
         t.start()
         app.state.runs[run_id] = {"thread": t, "stop": False}
         return {"run_id": run_id}
+
+    @app.get("/api/policy_grid")
+    def policy_grid():
+        """Per-cell Q-values of the live agent (training or inference).
+
+        Works on a deep copy of the env so the training thread's state is
+        never touched. Returns {"q": H x W x 4 | null, "w": W, "h": H}.
+        """
+        import copy
+        live = getattr(app.state, "live", None)
+        if not live:
+            raise HTTPException(404, "no live agent")
+        agent = live["agent"]
+        if not hasattr(agent, "q_values_batch"):
+            raise HTTPException(404, "agent exposes no q-values")
+        env = copy.deepcopy(live["env"])
+        import importlib
+        maze_mod = importlib.import_module("maze")
+        Hh, Ww = env.maze.shape
+        cells, obs_list = [], []
+        for i in range(Hh):
+            for j in range(Ww):
+                if env.maze[i, j] == maze_mod.HOLE:
+                    continue
+                env.agent_positions[0] = (i, j)
+                obs_list.append(env.get_observation())
+                cells.append((i, j))
+        grid = [[None] * Ww for _ in range(Hh)]
+        if obs_list:
+            q = np.asarray(agent.q_values_batch(obs_list), dtype=float)
+            for (i, j), row in zip(cells, q):
+                grid[i][j] = [round(float(v), 3) for v in row]
+        return {"q": grid, "w": Ww, "h": Hh}
 
     @app.post("/api/runs/{run_id}/cancel")
     def cancel_run(run_id: str):
@@ -390,6 +424,7 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
             agent = train_mod.create_agent(cfg["agent_type"], env, **agent_kw)
             _load_model_into(agent, model_path)
             agent.set_deterministic(True)
+            app.state.live = {"agent": agent, "env": env}
 
             episodes = int(body.get("episodes", 1))
             max_steps = int(body.get("max_steps", cfg.get("max_steps", 200)))

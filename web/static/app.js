@@ -46,7 +46,30 @@ let paintHeld = false;
 let frames = [];
 let frameIdx = 0;
 let playing = true;
-let policyArrows = null;
+let policyArrows = null;   // H x W argmax action (derived from policyQ)
+let policyQ = null;        // H x W x 4 q-values from /api/policy_grid
+let policyV = null;        // H x W max-q (value), plus min/max for the gradient
+let policyVmin = 0, policyVmax = 1;
+let overlayValues = true;
+let _gridBusy = false;
+
+async function refreshPolicyGrid() {
+  if (_gridBusy) return;
+  _gridBusy = true;
+  try {
+    const r = await fetch(API("/api/policy_grid"));
+    if (!r.ok) return;
+    const j = await r.json();
+    policyQ = j.q;
+    policyArrows = policyQ.map(row => row.map(q =>
+      q ? q.indexOf(Math.max(...q)) : null));
+    policyV = policyQ.map(row => row.map(q => q ? Math.max(...q) : null));
+    const flat = policyV.flat().filter(v => v !== null);
+    policyVmin = Math.min(...flat); policyVmax = Math.max(...flat);
+    draw();
+  } catch (e) { /* viewer-only — never break the stream */ }
+  finally { _gridBusy = false; }
+}
 let visitTrail = new Map();
 let overlayArrows = true, overlayVisits = false;
 let currentAgentType = null;
@@ -81,11 +104,32 @@ function draw() {
   const s = cellSize();
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.font = `${Math.floor(s * 0.72)}px serif`;
+  const sameDims = policyV && policyV.length === H && policyV[0].length === W;
   for (let i = 0; i < H; i++)
     for (let j = 0; j < W; j++) {
       ctx.fillStyle = COLORS[maze[i][j]] || COLORS[LAND];
       ctx.fillRect(j * s, i * s, s - 1, s - 1);
+      // value gradient (playground style): green = high V, red = low V
+      if (overlayValues && sameDims && policyV[i][j] !== null
+          && maze[i][j] !== HOLE) {
+        const t = (policyV[i][j] - policyVmin)
+                  / Math.max(policyVmax - policyVmin, 1e-6);
+        ctx.fillStyle = `rgba(${Math.round(220 * (1 - t))}, ${Math.round(200 * t)}, 60, 0.38)`;
+        ctx.fillRect(j * s, i * s, s - 1, s - 1);
+      }
+    }
+  // numbers when cells are big enough to stay legible
+  if (overlayValues && sameDims && s >= 24) {
+    ctx.font = `${Math.max(8, Math.floor(s * 0.22))}px "IBM Plex Mono", monospace`;
+    ctx.fillStyle = "rgba(10, 14, 11, 0.78)";
+    for (let i = 0; i < H; i++)
+      for (let j = 0; j < W; j++)
+        if (policyV[i][j] !== null && maze[i][j] !== HOLE)
+          ctx.fillText(policyV[i][j].toFixed(1), j * s + s / 2, i * s + s * 0.82);
+  }
+  ctx.font = `${Math.floor(s * 0.72)}px serif`;
+  for (let i = 0; i < H; i++)
+    for (let j = 0; j < W; j++) {
       const e = EMOJI[maze[i][j]];
       if (e) ctx.fillText(e, j * s + s / 2, i * s + s / 2 + s * 0.04);
     }
@@ -320,6 +364,7 @@ function pushFrame(f) {
 }
 function resetLive() {
   frames = []; frameIdx = 0; agentPos = null; policyArrows = null;
+  policyQ = null; policyV = null;
   visitTrail.clear();
   $("scrub").max = 0; $("scrub").value = 0;
   $("frameLabel").textContent = "0 / 0";
@@ -371,12 +416,14 @@ function startStream() {
       if (ev.loss != null) pushChart(lossChart, ev.episode, ev.loss);
       pushChart(epsChart, ev.episode, ev.epsilon);
       if (rewardChart.data.labels.length % 5 === 0) flushCharts();
+      if (ev.episode % 10 === 0) refreshPolicyGrid();
       _succWin.push(ev.success ? 1 : 0); if (_succWin.length > 25) _succWin.shift();
       const succ = Math.round(100 * _succWin.reduce((a, b) => a + b, 0) / _succWin.length);
       $("status").textContent =
         `ep ${ev.episode} R=${ev.total_reward.toFixed(2)} len=${ev.length} · succ₂₅ ${succ}%`;
     } else if (ev.type === "run" && ev.kind === "replay") {
       flushCharts();
+      refreshPolicyGrid();
       $("status").textContent = "🤖 trained — victory lap!";
     } else if (ev.type === "run" && ev.kind === "end") {
       flushCharts(); $("status").textContent = "done";
@@ -400,6 +447,10 @@ new ResizeObserver((entries) => {
   const b = $("boardWrap").getBoundingClientRect();
   _wrapW = b.width; _wrapH = b.height;
 }
+
+$("ovValues").addEventListener("change", e => {
+  overlayValues = e.target.checked; draw();
+});
 
 // --- presets --------------------------------------------------------------
 const PRESETS = {
