@@ -16,10 +16,18 @@ const HOLE = 0, LAND = 1, START = 2, EXIT = 3, LAVA = 4;
 const COLORS = {
   [HOLE]:  "#1a1a1a",
   [LAND]:  "#cfd0d3",
-  [START]: "#6ec07b",
-  [EXIT]:  "#e8c84a",
-  [LAVA]:  "#e25555",
+  [START]: "#b9d8bd",
+  [EXIT]:  "#cfd0d3",
+  [LAVA]:  "#cfd0d3",
 };
+// Emoji sprites (style borrowed from awjuliani/web-rl-playground):
+// cells keep a flat base color and the emoji carries the meaning.
+const EMOJI = {
+  [START]: "\u{1F3E0}",   // 🏠
+  [EXIT]:  "\u{1F48E}",   // 💎
+  [LAVA]:  "\u{1F525}",   // 🔥
+};
+const AGENT_EMOJI = "\u{1F916}";  // 🤖
 const AGENT_COLOR = "#4ea8ff";
 
 const $ = (id) => document.getElementById(id);
@@ -57,10 +65,14 @@ function cellSize() { return Math.floor(Math.min(canvas.width / W, canvas.height
 function draw() {
   const s = cellSize();
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = `${Math.floor(s * 0.72)}px serif`;
   for (let i = 0; i < H; i++)
     for (let j = 0; j < W; j++) {
       ctx.fillStyle = COLORS[maze[i][j]] || COLORS[LAND];
       ctx.fillRect(j * s, i * s, s - 1, s - 1);
+      const e = EMOJI[maze[i][j]];
+      if (e) ctx.fillText(e, j * s + s / 2, i * s + s / 2 + s * 0.04);
     }
   if (overlayVisits) {
     for (const [k, v] of visitTrail.entries()) {
@@ -80,10 +92,9 @@ function draw() {
   }
   if (agentPos) {
     const [r, c] = agentPos;
-    ctx.fillStyle = AGENT_COLOR;
-    ctx.beginPath();
-    ctx.arc(c * s + s/2, r * s + s/2, s * 0.36, 0, 2 * Math.PI);
-    ctx.fill();
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = `${Math.floor(s * 0.82)}px serif`;
+    ctx.fillText(AGENT_EMOJI, c * s + s / 2, r * s + s / 2 + s * 0.04);
   }
 }
 
