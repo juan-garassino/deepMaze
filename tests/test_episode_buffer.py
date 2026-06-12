@@ -112,3 +112,29 @@ def test_learn_every_gates_gradient_steps():
     agent = create_agent("drqn", env, **kw)
     train_agent(env, agent, num_episodes=4, max_steps=5)
     assert agent.last_loss is not None
+
+
+def test_stored_hidden_state_sampled_at_chunk_start():
+    env = MazeEnvironment(**_TINY, partial_view=1)
+    agent = create_agent("drqn", env, **_DRQN_KW)
+    train_agent(env, agent, num_episodes=4, max_steps=6)
+    batch = agent.buf.sample(2, seq_len=4)
+    ie = batch["init_extra"]
+    assert ie is not None
+    layers = agent.model.lstm.num_layers
+    hsize = agent.model.lstm.hidden_size
+    assert ie.shape == (2, 2, layers, hsize)  # (B, h/c, layers, H)
+    assert np.isfinite(ie).all()
+
+
+def test_buffer_without_extras_returns_none():
+    buf = EpisodeBuffer(capacity=2)
+    _fill_episode(buf, 3)
+    assert buf.sample(1, seq_len=4)["init_extra"] is None
+
+
+def test_drqn_learns_from_stored_state_burn_in():
+    env = MazeEnvironment(**_TINY, partial_view=1)
+    agent = create_agent("drqn", env, **_DRQN_KW)
+    train_agent(env, agent, num_episodes=6, max_steps=6)
+    assert agent.last_loss is not None and np.isfinite(agent.last_loss)

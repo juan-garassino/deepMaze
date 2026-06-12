@@ -120,10 +120,23 @@ class DRQNAgent(BaseAgent):
             return torch.from_numpy(arr.astype(np.float32)).to(self.device)
         return torch.from_numpy(arr).long().to(self.device)
 
+    def _hidden_snapshot(self):
+        """Hidden state going INTO the current step, as one float32 array
+        (2, layers, H) — stored per transition for R2D2-style stored-state
+        burn-in. Zeros at episode start (hidden is None)."""
+        if self._hidden is None:
+            num_layers = self.model.lstm.num_layers
+            hsize = self.model.lstm.hidden_size
+            return np.zeros((2, num_layers, hsize), dtype=np.float32)
+        h, c = self._hidden
+        return np.stack([h.squeeze(1).cpu().numpy(),
+                         c.squeeze(1).cpu().numpy()]).astype(np.float32)
+
     def move(self, state):
         x = self._obs_tensor(state)
         pa = torch.tensor([[self._last_action]],
                           dtype=torch.long, device=self.device)
+        self._hidden_pre = self._hidden_snapshot()
         with torch.no_grad():
             q, self._hidden = self.model(x, pa, self._hidden)
         if (not self.deterministic) and np.random.random() < self.epsilon:
@@ -134,7 +147,8 @@ class DRQNAgent(BaseAgent):
         return a
 
     def update(self, state, action, reward, next_state, done, truncated=False):
-        self.buf.add_step(state, action, reward, next_state, done)
+        self.buf.add_step(state, action, reward, next_state, done,
+                          extra=getattr(self, "_hidden_pre", None))
         self._step += 1
         if done:
             self._hidden = None
@@ -156,11 +170,26 @@ class DRQNAgent(BaseAgent):
         # next-step "prev action" is the current action at each step
         npa_t = act_t
 
+        # R2D2-style stored-state burn-in: init the burn-in from the hidden
+        # state recorded when the chunk's first transition was generated,
+        # instead of zeros. Burn-in then heals the (slight) staleness of the
+        # stored state vs the current weights.
+        init = None
+        if batch.get("init_extra") is not None:
+            ie = torch.from_numpy(batch["init_extra"]).to(self.device)
+            # (B, 2, layers, H) → h/c each (layers, B, H)
+            init = (ie[:, 0].transpose(0, 1).contiguous(),
+                    ie[:, 1].transpose(0, 1).contiguous())
+
         bi = min(self.burn_in, T - 1)
         with torch.no_grad():
-            _, hid = self.model(obs_t[:, :bi], pa_t[:, :bi], None)
-            _, hid_nxt = self.model(nobs_t[:, :bi], npa_t[:, :bi], None)
-            _, hid_tgt = self.target_model(nobs_t[:, :bi], npa_t[:, :bi], None)
+            if bi > 0:
+                _, hid = self.model(obs_t[:, :bi], pa_t[:, :bi], init)
+                _, hid_nxt = self.model(nobs_t[:, :bi], npa_t[:, :bi], init)
+                _, hid_tgt = self.target_model(nobs_t[:, :bi], npa_t[:, :bi],
+                                               init)
+            else:
+                hid = hid_nxt = hid_tgt = init
 
         q_seq, _ = self.model(obs_t[:, bi:], pa_t[:, bi:], hid)
         with torch.no_grad():

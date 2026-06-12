@@ -15,14 +15,14 @@ Env vars (all optional — defaults shown):
     AGENTS_TO_RUN=drqn         # comma-separated
     RUN_TAG=v1
     SEED=0
-    # Curriculum: semicolon-separated stages "W,H,n_treasures,episodes,max_steps"
-    CURRICULUM=10,20,5,800,200;20,40,8,1200,400;30,60,10,2000,600
+    # Curriculum: semicolon-separated "W,H,n_treasures,episodes,max_steps[,seq_len]"
+    CURRICULUM=10,20,5,800,200,8;20,40,8,1200,400,16;30,60,10,2000,600,32
     # Single-stage override (skips curriculum):
     MAZE_WIDTH= MAZE_HEIGHT= N_TREASURES= NUM_EPISODES= MAX_STEPS=
     PARTIAL=5 N_LAVA=2 COLLECT_ALL=false GENERATOR=dfs DENSITY=0.2
     REGENERATE_EVERY=1 EVAL_REGENERATE=true EVAL_EPISODES=50
     RANDOM_START=true BUMP_PENALTY=-0.01
-    AUX_FEATURES=true REWARD_SHAPING=true
+    AUX_FEATURES=false REWARD_SHAPING=true   # memory-first; aux = ablation knob
     EVAL_EVERY=0 ADVANCE_THRESHOLD=0 STAGE_MAX_REPEATS=1
     NANO=false      # true = tiny nets + learn_every=4 + 3-episode evals
                     # (CPU smoke-test; `make local` sets it)
@@ -87,13 +87,21 @@ if SINGLE_W:
         _env("N_TREASURES", 10, int),
         _env("NUM_EPISODES", 3000, int),
         _env("MAX_STEPS", 600, int),
+        _env("SEQ_LEN", 0, int),
     )]
 else:
-    raw = _env("CURRICULUM", "10,20,5,800,200;20,40,8,1200,400;30,60,10,2000,600")
+    # Stage fields: W,H,n_treasures,episodes,max_steps[,seq_len].
+    # seq_len scales the memory window with maze size (0 = repo default);
+    # burn_in follows as seq_len//2. Weight transfer is unaffected — seq_len
+    # is not shape-bearing (the LSTM unrolls any length).
+    raw = _env("CURRICULUM",
+               "10,20,5,800,200,8;20,40,8,1200,400,16;30,60,10,2000,600,32")
     STAGES = []
     for stage in raw.split(";"):
-        w, h, nt, ne, mx = (int(x.strip()) for x in stage.split(","))
-        STAGES.append((w, h, nt, ne, mx))
+        parts = [int(x.strip()) for x in stage.split(",")]
+        w, h, nt, ne, mx = parts[:5]
+        sq = parts[5] if len(parts) > 5 else 0
+        STAGES.append((w, h, nt, ne, mx, sq))
 
 GENERATOR        = _env("GENERATOR", "dfs")
 DENSITY          = _env("DENSITY", 0.2, float)
@@ -105,7 +113,11 @@ EVAL_REGENERATE  = _env("EVAL_REGENERATE", True, bool)
 EVAL_EPISODES    = _env("EVAL_EPISODES", 50, int)
 RANDOM_START     = _env("RANDOM_START", True, bool)
 BUMP_PENALTY     = _env("BUMP_PENALTY", -0.01, float)
-AUX_FEATURES     = _env("AUX_FEATURES", True, bool)
+# Memory-first: the agent must navigate from its recurrent memory, so aux
+# observation features default OFF (flip on for an ablation A/B). Shaping
+# stays on — it densifies the training signal without leaking anything
+# into the observation the policy sees at inference.
+AUX_FEATURES     = _env("AUX_FEATURES", False, bool)
 REWARD_SHAPING   = _env("REWARD_SHAPING", True, bool)
 EVAL_EVERY        = _env("EVAL_EVERY", 0, int)       # 0 = num_episodes//10
 ADVANCE_THRESHOLD = _env("ADVANCE_THRESHOLD", 0.0, float)  # 0 = gate off
@@ -179,6 +191,7 @@ def _warm_start(agent, path: str) -> None:
 def train_stage(agent_type: str, run_name: str,
                 width: int, height: int, n_treasures: int,
                 num_episodes: int, max_steps: int,
+                seq_len: int = 0,
                 warm_start_path: str | None = None) -> dict:
     print()
     print(_hr("━"))
@@ -194,6 +207,9 @@ def train_stage(agent_type: str, run_name: str,
         aux_features=AUX_FEATURES, reward_shaping=REWARD_SHAPING,
     )
     overrides = _agent_overrides(agent_type)
+    if seq_len and agent_type in ("drqn", "dtqn"):
+        overrides["seq_len"] = seq_len
+        overrides["burn_in"] = max(2, seq_len // 2)
     agent = create_agent(agent_type, env, **overrides)
 
     if warm_start_path:
@@ -388,13 +404,13 @@ def main():
     for agent_type in agents:
         warm = None
         stage_results = []
-        for i, (w, h, nt, ne, mx) in enumerate(STAGES):
+        for i, (w, h, nt, ne, mx, sq) in enumerate(STAGES):
             res = None
             for attempt in range(1 + max(0, STAGE_MAX_REPEATS - 1)):
                 run_name = f"{agent_type}_{RUN_TAG}_s{i}_{w}x{h}" + (
                     f"_r{attempt}" if attempt else "")
                 res = train_stage(agent_type, run_name, w, h, nt, ne, mx,
-                                  warm_start_path=warm)
+                                  seq_len=sq, warm_start_path=warm)
                 stage_results.append(res)
                 gate = max(res["eval_success_rate"], res["best_success_rate"])
                 if not ADVANCE_THRESHOLD or gate >= ADVANCE_THRESHOLD:

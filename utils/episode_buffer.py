@@ -42,10 +42,15 @@ class EpisodeBuffer:
         self._current = []
         self._prev_a = NO_ACTION
 
-    def add_step(self, obs, action, reward, next_obs, done) -> None:
+    def add_step(self, obs, action, reward, next_obs, done,
+                 extra=None) -> None:
+        """`extra` is an optional per-step agent payload sampled back as
+        `init_extra` at chunk starts — DRQN stores its recurrent state here
+        (R2D2-style stored-state burn-in)."""
         self._current.append((
             np.asarray(obs), int(self._prev_a), int(action),
             float(reward), np.asarray(next_obs), float(done),
+            extra,
         ))
         self._prev_a = int(action)
         if done:
@@ -57,16 +62,18 @@ class EpisodeBuffer:
 
     def sample(self, batch_size: int, seq_len: int) -> dict[str, np.ndarray]:
         eps = random.sample(self.episodes, min(batch_size, len(self.episodes)))
-        seqs, masks = [], []
+        seqs, masks, init_extras = [], [], []
         for ep in eps:
             if len(ep) <= seq_len:
                 pad = [ep[-1]] * (seq_len - len(ep))
                 seqs.append(ep + pad)
                 masks.append([1.0] * len(ep) + [0.0] * (seq_len - len(ep)))
+                init_extras.append(ep[0][6])
             else:
                 start = random.randint(0, len(ep) - seq_len)
                 seqs.append(ep[start:start + seq_len])
                 masks.append([1.0] * seq_len)
+                init_extras.append(ep[start][6])
         return {
             "obs": np.stack([[s[0] for s in seq] for seq in seqs]),
             "prev_action": np.array([[s[1] for s in seq] for seq in seqs],
@@ -79,4 +86,9 @@ class EpisodeBuffer:
             "done": np.array([[s[5] for s in seq] for seq in seqs],
                              dtype=np.float32),
             "mask": np.array(masks, dtype=np.float32),
+            # Stacked per-sequence chunk-start extras, or None when the
+            # agent never supplied them.
+            "init_extra": (np.stack(init_extras)
+                           if all(e is not None for e in init_extras)
+                           else None),
         }
