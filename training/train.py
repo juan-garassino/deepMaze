@@ -172,6 +172,10 @@ def simulate_episode_streaming(env: MazeEnvironment, agent, bus: EventBus,
     Used by /api/inference for pretrained-model playback. Reuses the same
     wire format as train_agent's inline step emission so the JS client
     doesn't need to know the difference.
+
+    Playback publishes the FULL maze (the client draws the agent from
+    `position`) — for partial-view models the agent's own observation is a
+    tiny egocentric window, which made the online "watch" look broken.
     """
     state = env.reset(at_start=at_start)
     if hasattr(agent, "on_episode_start"):
@@ -187,7 +191,7 @@ def simulate_episode_streaming(env: MazeEnvironment, agent, bus: EventBus,
         mem = agent.memory_snapshot() if hasattr(agent, "memory_snapshot") else None
         bus.publish(StepEvent(
             episode=episode, step=step,
-            state=env.split_observation(next_state)[0],
+            state=env.maze.copy(),
             position=env.agent_positions[0],
             action=int(action), reward=float(reward), done=bool(done),
             q_values=None, memory=mem,
