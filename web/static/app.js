@@ -62,14 +62,14 @@ function blankMaze(w, h) {
 function cloneMaze(m) { return m.map(r => r.slice()); }
 function cellSize() { return Math.floor(Math.min(canvas.width / W, canvas.height / H)); }
 
+// Cached pane size — measured by the ResizeObserver only, never inside the
+// render loop (getBoundingClientRect per frame forces layout and froze the
+// page during fast SSE streams).
+let _wrapW = 0, _wrapH = 0;
 function fitCanvas() {
-  // Size the canvas to fill the board pane while keeping cells square.
-  const wrap = $("boardWrap");
-  if (!wrap) return;
-  const box = wrap.getBoundingClientRect();
-  if (box.width < 40 || box.height < 40) return;
-  const cell = Math.max(6, Math.floor(Math.min((box.width - 4) / W,
-                                               (box.height - 4) / H)));
+  if (_wrapW < 40 || _wrapH < 40) return;
+  const cell = Math.max(6, Math.floor(Math.min((_wrapW - 4) / W,
+                                               (_wrapH - 4) / H)));
   const cw = cell * W, ch = cell * H;
   if (canvas.width !== cw || canvas.height !== ch) {
     canvas.width = cw; canvas.height = ch;
@@ -300,9 +300,23 @@ function renderFrame(idx) {
   $("frameLabel").textContent = `${idx + 1} / ${frames.length}`;
   $("scrub").max = frames.length - 1; $("scrub").value = idx;
 }
+// Render at most once per animation frame — SSE can deliver hundreds of
+// steps/sec; drawing each one synchronously locks the main thread.
+let _renderQueued = false;
+function scheduleRender() {
+  if (_renderQueued) return;
+  _renderQueued = true;
+  requestAnimationFrame(() => { _renderQueued = false; renderFrame(frameIdx); });
+}
+
+const MAX_FRAMES = 4000;  // scrubber history cap — unbounded growth ate RAM
 function pushFrame(f) {
   frames.push(f);
-  if (playing) { frameIdx = frames.length - 1; renderFrame(frameIdx); }
+  if (frames.length > MAX_FRAMES) {
+    frames.splice(0, frames.length - MAX_FRAMES);
+    frameIdx = Math.min(frameIdx, frames.length - 1);
+  }
+  if (playing) { frameIdx = frames.length - 1; scheduleRender(); }
 }
 function resetLive() {
   frames = []; frameIdx = 0; agentPos = null; policyArrows = null;
@@ -373,8 +387,19 @@ function startStream() {
   es.onerror = () => { $("status").textContent = "stream closed"; };
 }
 
-new ResizeObserver(() => draw()).observe($("boardWrap"));
-window.addEventListener("resize", () => draw());
+new ResizeObserver((entries) => {
+  const r = entries[entries.length - 1].contentRect;
+  // only react to real pane-size changes — resizing the canvas itself
+  // re-fires the observer and would otherwise loop forever
+  if (Math.abs(r.width - _wrapW) > 1 || Math.abs(r.height - _wrapH) > 1) {
+    _wrapW = r.width; _wrapH = r.height;
+    draw();
+  }
+}).observe($("boardWrap"));
+{
+  const b = $("boardWrap").getBoundingClientRect();
+  _wrapW = b.width; _wrapH = b.height;
+}
 
 // --- presets --------------------------------------------------------------
 const PRESETS = {
