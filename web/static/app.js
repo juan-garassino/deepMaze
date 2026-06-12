@@ -296,7 +296,16 @@ function startStream() {
     const ev = JSON.parse(msg.data);
     if (ev.type === "step") {
       const baseMaze = ev.state.map(row => row.map(v => v >= 5 ? LAND : v));
-      H = baseMaze.length; W = baseMaze[0].length;
+      // Auto-sync the grid to the streamed maze — without this, watching a
+      // model whose maze differs from the editor's left stale editor cells
+      // on the canvas until the user hit Regenerate manually.
+      if (baseMaze.length !== H || baseMaze[0].length !== W) {
+        H = baseMaze.length; W = baseMaze[0].length;
+        $("w").value = W; $("h").value = H;
+        maze = cloneMaze(baseMaze);
+        visitTrail.clear();
+        draw();
+      }
       pushFrame({ maze: baseMaze, pos: ev.position, memory: ev.memory });
       visitTrail.set(`${ev.position[0]},${ev.position[1]}`, 1);
     } else if (ev.type === "step_delta") {
