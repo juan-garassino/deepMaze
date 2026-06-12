@@ -216,20 +216,31 @@ const chartOpts = {
   plugins: { legend: { labels: { color: "#ccc", font: { size: 10 } } } },
   elements: { line: { tension: 0.2 }, point: { radius: 0 } },
 };
-function mkChart(id, label, color) {
+function mkChart(id, label, color, withAvg = false) {
+  const datasets = [{ label, data: [], borderColor: color, borderWidth: 1.5 }];
+  if (withAvg) datasets.push({ label: label + " (avg25)", data: [],
+    borderColor: "#41e88d", borderWidth: 2, pointRadius: 0 });
   return new Chart($(id), {
     type: "line",
-    data: { labels: [], datasets: [{ label, data: [], borderColor: color, borderWidth: 1.5 }] },
+    data: { labels: [], datasets },
     options: chartOpts,
   });
 }
-const rewardChart = mkChart("rewardChart", "reward", "#4ea8ff");
+const rewardChart = mkChart("rewardChart", "reward", "#4ea8ff", true);
+const _rewardWin = [];   // moving-average window
+const _succWin = [];     // rolling success window (the "is it learning" metric)
 const lengthChart = mkChart("lengthChart", "length", "#ffb479");
 const lossChart   = mkChart("lossChart",   "loss",   "#e25555");
 const epsChart    = mkChart("epsChart",    "epsilon","#6ec07b");
 function pushChart(c, x, y) { c.data.labels.push(x); c.data.datasets[0].data.push(y); }
+function pushAvg(c, y, win) {
+  win.push(y); if (win.length > 25) win.shift();
+  c.data.datasets[1].data.push(win.reduce((a, b) => a + b, 0) / win.length);
+}
 function flushCharts() { for (const c of [rewardChart, lengthChart, lossChart, epsChart]) c.update("none"); }
 function resetCharts() {
+  _rewardWin.length = 0; _succWin.length = 0;
+  rewardChart.data.datasets[1].data = [];
   for (const c of [rewardChart, lengthChart, lossChart, epsChart]) {
     c.data.labels = []; c.data.datasets[0].data = []; c.update("none");
   }
@@ -326,12 +337,15 @@ function startStream() {
       visitTrail.set(`${ev.position[0]},${ev.position[1]}`, 1);
     } else if (ev.type === "episode") {
       pushChart(rewardChart, ev.episode, ev.total_reward);
+      pushAvg(rewardChart, ev.total_reward, _rewardWin);
       pushChart(lengthChart, ev.episode, ev.length);
       if (ev.loss != null) pushChart(lossChart, ev.episode, ev.loss);
       pushChart(epsChart, ev.episode, ev.epsilon);
       if (rewardChart.data.labels.length % 5 === 0) flushCharts();
+      _succWin.push(ev.success ? 1 : 0); if (_succWin.length > 25) _succWin.shift();
+      const succ = Math.round(100 * _succWin.reduce((a, b) => a + b, 0) / _succWin.length);
       $("status").textContent =
-        `ep ${ev.episode} R=${ev.total_reward.toFixed(2)} len=${ev.length}`;
+        `ep ${ev.episode} R=${ev.total_reward.toFixed(2)} len=${ev.length} · succ₂₅ ${succ}%`;
     } else if (ev.type === "run" && ev.kind === "replay") {
       flushCharts();
       $("status").textContent = "🤖 trained — victory lap!";
