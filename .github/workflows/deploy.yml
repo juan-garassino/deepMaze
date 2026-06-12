@@ -33,7 +33,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Slack is optional — rtCamp's action hard-fails on an empty webhook,
+      # which used to kill the whole deploy at step 1 when the secret was
+      # unset. Same skip pattern as Telegram below.
+      - name: Detect Slack secret
+        id: slack_has
+        env:
+          HOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "${HOOK}" ]; then
+            echo "secret=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "secret=no"  >> "$GITHUB_OUTPUT"
+            echo "SLACK_WEBHOOK_URL not configured — skipping Slack notifications."
+          fi
+
       - name: Slack — deploy started
+        if: steps.slack_has.outputs.secret == 'yes'
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -102,7 +118,7 @@ jobs:
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
       - name: Slack — deploy succeeded
-        if: success()
+        if: success() && steps.slack_has.outputs.secret == 'yes'
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -112,7 +128,7 @@ jobs:
           MSG_MINIMAL: "true"
 
       - name: Slack — deploy failed
-        if: failure()
+        if: failure() && steps.slack_has.outputs.secret == 'yes'
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
