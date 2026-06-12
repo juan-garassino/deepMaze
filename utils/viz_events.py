@@ -80,6 +80,7 @@ class EvalEvent:
     mean_reward: float
     mean_length: float
     success_rate: float
+    revisit_rate: float = 0.0  # memory metric: steps on already-visited cells
 
     def to_json(self) -> dict:
         return {"type": "eval", **asdict(self)}

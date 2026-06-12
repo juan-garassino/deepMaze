@@ -16,10 +16,11 @@ Env vars (all optional — defaults shown):
     RUN_TAG=v1
     SEED=0
     # Curriculum: semicolon-separated "W,H,n_treasures,episodes,max_steps[,seq_len]"
-    CURRICULUM=10,20,5,800,200,8;20,40,8,1200,400,16;30,60,10,2000,600,32
+    CURRICULUM=10,20,2,800,180,8;20,40,4,1500,720,16;30,60,6,2500,1620,32
     # Single-stage override (skips curriculum):
     MAZE_WIDTH= MAZE_HEIGHT= N_TREASURES= NUM_EPISODES= MAX_STEPS=
-    PARTIAL=5 N_LAVA=2 COLLECT_ALL=false GENERATOR=dfs DENSITY=0.2
+    PARTIAL=5 N_LAVA=2 COLLECT_ALL=true DENSITY=0.2
+    GENERATOR=dfs,random   # comma list = per-build sample (generalization)
     REGENERATE_EVERY=1 EVAL_REGENERATE=true EVAL_EPISODES=50
     RANDOM_START=true BUMP_PENALTY=-0.01
     AUX_FEATURES=false REWARD_SHAPING=true   # memory-first; aux = ablation knob
@@ -94,8 +95,10 @@ else:
     # seq_len scales the memory window with maze size (0 = repo default);
     # burn_in follows as seq_len//2. Weight transfer is unaffected — seq_len
     # is not shape-bearing (the LSTM unrolls any length).
+    # Collect-all tours: max_steps = 3*(w+h)*n_treasures, treasure counts
+    # ramp 2/4/6 so the keep-going-after-pickup behavior is learned early.
     raw = _env("CURRICULUM",
-               "10,20,5,800,200,8;20,40,8,1200,400,16;30,60,10,2000,600,32")
+               "10,20,2,800,180,8;20,40,4,1500,720,16;30,60,6,2500,1620,32")
     STAGES = []
     for stage in raw.split(";"):
         parts = [int(x.strip()) for x in stage.split(",")]
@@ -103,10 +106,10 @@ else:
         sq = parts[5] if len(parts) > 5 else 0
         STAGES.append((w, h, nt, ne, mx, sq))
 
-GENERATOR        = _env("GENERATOR", "dfs")
+GENERATOR        = _env("GENERATOR", "dfs,random")  # comma list = sampled per maze build
 DENSITY          = _env("DENSITY", 0.2, float)
 N_LAVA           = _env("N_LAVA", 2, int)
-COLLECT_ALL      = _env("COLLECT_ALL", False, bool)
+COLLECT_ALL      = _env("COLLECT_ALL", True, bool)
 PARTIAL          = _env("PARTIAL", 5, int)
 REGENERATE_EVERY = _env("REGENERATE_EVERY", 1, int)
 EVAL_REGENERATE  = _env("EVAL_REGENERATE", True, bool)
@@ -284,7 +287,8 @@ def train_stage(agent_type: str, run_name: str,
     def on_eval(ep: int, m: dict):
         mlflow.log_metrics({f"periodic_{k}": v for k, v in m.items()}, step=ep)
         print(f"  ◈ eval @ {ep}: succ={m['success_rate']:.1%} "
-              f"R̄={m['mean_reward']:+.2f}", flush=True)
+              f"R̄={m['mean_reward']:+.2f} "
+              f"revisit={m.get('revisit_rate', 0.0):.0%}", flush=True)
         if m["success_rate"] > best["succ"]:
             best["succ"] = m["success_rate"]
             best["episode"] = ep
@@ -313,15 +317,18 @@ def train_stage(agent_type: str, run_name: str,
                     random_start=RANDOM_START,
                     regenerate_every=(REGENERATE_EVERY or None),
                     eval_every=eval_every, eval_episodes=eval_n, on_eval=on_eval)
+        final_extra: dict = {}
         mean_r, mean_l, succ = evaluate_agent(
             env, agent, num_episodes=(5 if NANO else EVAL_EPISODES),
             max_steps=max_steps,
             regenerate_each=EVAL_REGENERATE,
+            metrics_out=final_extra,
         )
         mlflow.log_metrics({
             "eval_mean_reward": mean_r,
             "eval_mean_length": mean_l,
             "eval_success_rate": succ,
+            "eval_revisit_rate": final_extra.get("revisit_rate", 0.0),
         })
         run_id = run.info.run_id
 

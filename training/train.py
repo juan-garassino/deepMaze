@@ -142,15 +142,20 @@ def train_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: int,
         # memory agents' episode is already flushed (eval's
         # on_episode_start would otherwise commit a partial episode).
         if eval_every and (episode + 1) % eval_every == 0:
+            extra: dict = {}
             mean_r, mean_l, succ = evaluate_agent(env, agent,
-                                                  eval_episodes, max_steps)
+                                                  eval_episodes, max_steps,
+                                                  metrics_out=extra)
+            revisit = extra.get("revisit_rate", 0.0)
             if bus is not None:
                 bus.publish(EvalEvent(episode=episode, mean_reward=mean_r,
-                                      mean_length=mean_l, success_rate=succ))
+                                      mean_length=mean_l, success_rate=succ,
+                                      revisit_rate=revisit))
             if on_eval is not None:
                 on_eval(episode, {"mean_reward": mean_r,
                                   "mean_length": mean_l,
-                                  "success_rate": succ})
+                                  "success_rate": succ,
+                                  "revisit_rate": revisit})
 
     if hasattr(agent, "flush"):
         agent.flush()
@@ -209,6 +214,15 @@ class EpisodeResult:
     done: bool
     success: bool  # reached a positive terminal (not timeout, not lava)
 
+    @property
+    def revisit_rate(self) -> float:
+        """Fraction of steps spent on already-visited cells — the memory
+        metric: a memoryless policy re-walks corridors while searching for
+        remaining treasures; a memory policy shouldn't."""
+        if len(self.positions) <= 1:
+            return 0.0
+        return 1.0 - len(set(self.positions)) / len(self.positions)
+
 
 def run_episode(env: MazeEnvironment, agent, max_steps: int,
                 at_start: bool = True) -> EpisodeResult:
@@ -248,8 +262,11 @@ def evaluate_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: in
                    deterministic: bool = True,
                    regenerate_each: bool = False,
                    at_start: bool = True,
+                   metrics_out: dict | None = None,
                    ) -> tuple[float, float, float]:
-    rewards, lengths, successes = [], [], 0
+    """Returns (mean_reward, mean_length, success_rate). Pass a dict as
+    `metrics_out` to also receive secondary metrics (revisit_rate)."""
+    rewards, lengths, successes, revisits = [], [], 0, []
     prev = getattr(agent, "deterministic", False)
     if deterministic:
         agent.set_deterministic(True)
@@ -260,9 +277,12 @@ def evaluate_agent(env: MazeEnvironment, agent, num_episodes: int, max_steps: in
             result = run_episode(env, agent, max_steps, at_start=at_start)
             rewards.append(result.total_reward)
             lengths.append(result.length)
+            revisits.append(result.revisit_rate)
             if result.success:
                 successes += 1
     finally:
         if deterministic:
             agent.set_deterministic(prev)
+    if metrics_out is not None:
+        metrics_out["revisit_rate"] = float(np.mean(revisits))
     return float(np.mean(rewards)), float(np.mean(lengths)), successes / num_episodes

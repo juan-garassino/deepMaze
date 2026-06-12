@@ -26,7 +26,8 @@ def test_eval_fires_at_cadence_and_emits_events():
     assert [ep for ep, _ in calls] == [1, 3]
     assert len(eval_events) == 2
     for _, m in calls:
-        assert set(m) == {"mean_reward", "mean_length", "success_rate"}
+        assert set(m) == {"mean_reward", "mean_length", "success_rate",
+                          "revisit_rate"}
     ev = eval_events[0]
     assert ev.to_json()["type"] == "eval"
 

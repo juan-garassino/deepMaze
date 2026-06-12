@@ -101,3 +101,47 @@ def test_default_max_steps_formula():
     # non-collect_all ignores treasure count
     env_nt = _env(width=10, height=20, n_treasures=3)
     assert default_max_steps(env_nt) == 3 * 30
+
+
+def test_revisit_rate_measures_oscillation():
+    from train import run_episode
+    env = _env()
+    # oscillates between two cells forever → revisit approaches 1
+    osc = run_episode(env, _ScriptedAgent([2, 0] * 20), max_steps=20,
+                      at_start=True)
+    assert osc.revisit_rate > 0.8
+    # straight walk to the corner treasure → no revisits
+    env2 = _env()
+    env2.reset(at_start=True)
+    tr = env2.treasure_positions[0]
+    path = [2] * (tr[0] - 1) + [1] * (tr[1] - 1)
+    straight = run_episode(env2, _ScriptedAgent(path), max_steps=30,
+                           at_start=True)
+    assert straight.success
+    assert straight.revisit_rate == 0.0
+
+
+def test_evaluate_agent_reports_revisit_metric():
+    out: dict = {}
+    env = _env()
+    evaluate_agent(env, _ScriptedAgent([2, 0] * 30), num_episodes=2,
+                   max_steps=10, deterministic=False, metrics_out=out)
+    assert 0.0 <= out["revisit_rate"] <= 1.0
+    assert out["revisit_rate"] > 0.5
+
+
+def test_generator_mix_samples_both():
+    used = set()
+    env = MazeEnvironment(width=8, height=8, generator="dfs,open", seed=0)
+    used.add(env.generator_used)
+    for _ in range(12):
+        env.regenerate()
+        used.add(env.generator_used)
+    assert used == {"dfs", "open"}
+    assert env.is_solvable()
+
+
+def test_generator_mix_rejects_unknown():
+    import pytest
+    with pytest.raises(ValueError, match="Unknown generator"):
+        MazeEnvironment(width=8, height=8, generator="dfs,bogus", seed=0)

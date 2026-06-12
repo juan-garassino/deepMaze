@@ -105,14 +105,24 @@ class MazeEnvironment:
     # ------------------------------------------------------------------
     # generators
     # ------------------------------------------------------------------
+    _GENERATORS = ("random", "dfs", "open")
+
     def _generate_maze(self) -> np.ndarray:
-        if self.generator == "random":
+        # Comma-separated generators ("dfs,random") sample one per build —
+        # with regenerate_every this trains across topologies, which is what
+        # actually buys cross-maze generalization.
+        choices = [g.strip() for g in self.generator.split(",") if g.strip()]
+        unknown = [g for g in choices if g not in self._GENERATORS]
+        if unknown or not choices:
+            raise ValueError(f"Unknown generator: {self.generator!r}")
+        gen = choices[int(self._rng.integers(len(choices)))] \
+            if len(choices) > 1 else choices[0]
+        self.generator_used = gen
+        if gen == "random":
             return self._gen_random()
-        if self.generator == "dfs":
+        if gen == "dfs":
             return self._gen_dfs()
-        if self.generator == "open":
-            return self._gen_open()
-        raise ValueError(f"Unknown generator: {self.generator!r}")
+        return self._gen_open()
 
     def _gen_random(self) -> np.ndarray:
         m = self._rng.choice([HOLE, LAND], size=(self.height, self.width),
