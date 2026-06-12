@@ -2,6 +2,8 @@
 
 Split out of maze.py (which keeps the MazeEnvironment); maze.py re-exports
 RenderMaze so existing `from maze import RenderMaze` imports keep working.
+Shared cell/sprite constants live in cells.py so this module never imports
+maze — no circular import in either direction.
 """
 
 from __future__ import annotations
@@ -9,8 +11,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
-from maze import (
-    _AGENT_TINTS,  # per-agent tints (index 0 = no tint)
+from cells import (
     AGENT_BASE,
     EXIT,
     HOLE,
@@ -20,6 +21,9 @@ from maze import (
     SPRITE_HOLE,
     SPRITE_LAND,
     SPRITE_LAVA,
+)
+from cells import (
+    AGENT_TINTS as _AGENT_TINTS,
 )
 from PIL import Image, ImageDraw, ImageFont
 

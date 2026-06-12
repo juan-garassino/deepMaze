@@ -15,17 +15,23 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
-
-HOLE, LAND, START, EXIT, LAVA = 0, 1, 2, 3, 4
-AGENT_BASE = 5  # agents are encoded as AGENT_BASE + agent_index
+from cells import (  # noqa: F401 — re-exported; historic home of these names
+    AGENT_BASE,
+    EXIT,
+    HOLE,
+    LAND,
+    LAVA,
+    SPRITE_AGENT,
+    SPRITE_EXIT,
+    SPRITE_HOLE,
+    SPRITE_LAND,
+    SPRITE_LAVA,
+    START,
+)
 
 # Length of the auxiliary feature vector appended to the observation when
 # aux_features=True: [row, col, unit_dr, unit_dc, dist, remaining_frac].
 AUX_DIM = 6
-SPRITE_HOLE, SPRITE_LAND, SPRITE_LAVA, SPRITE_EXIT, SPRITE_AGENT = 0, 1, 2, 3, 4
-
-# Per-agent tints for multi-agent renders; index 0 = no tint.
-_AGENT_TINTS = [None, (255, 80, 80), (80, 255, 80), (80, 160, 255), (255, 200, 60)]
 
 
 class MazeEnvironment:

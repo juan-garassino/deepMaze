@@ -52,21 +52,10 @@ def _find_model_file(d: str) -> str | None:
 
 
 def _load_model_into(agent, path: str) -> None:
-    """Restore agent state from a saved file (mirrors main._resume_agent)."""
-    import pickle
-    if path.endswith(".pkl"):
-        with open(path, "rb") as f:
-            agent.Q.update(pickle.load(f))
-        return
-    import torch
-    module = getattr(agent, "model", None) or getattr(agent, "ac", None)
-    try:
-        state = torch.load(path, map_location=getattr(agent, "device", "cpu"),
-                           weights_only=True)
-    except (TypeError, RuntimeError):
-        # older torch (<2.1) or non-tensor pickle: fall back to legacy load
-        state = torch.load(path, map_location=getattr(agent, "device", "cpu"))
-    module.load_state_dict(state)
+    """Restore agent state from a saved file (bundles.warm_start; also syncs
+    the target net, which is harmless for greedy inference)."""
+    from bundles import warm_start
+    warm_start(agent, path)
 
 
 def _render_detail(name: str, results: dict, artifacts: list[str]) -> str:
