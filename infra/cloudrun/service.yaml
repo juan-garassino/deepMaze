@@ -34,8 +34,7 @@ spec:
               cpu: "1"
               memory: 1Gi
           env:
-            - name: PORT
-              value: "8000"
+            # PORT is reserved — Cloud Run injects it from containerPort.
             - name: CORS_ORIGINS
               value: ${CORS_ORIGINS}
             - name: ASSETS_BUCKET
