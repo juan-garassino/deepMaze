@@ -162,12 +162,18 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
             seeding_mod = importlib.import_module("seeding")
             seeding_mod.seed_everything(body.get("seed"))
 
+            feature_kw = dict(
+                reward_shaping=bool(body.get("reward_shaping", False)),
+                bump_penalty=float(body.get("bump_penalty", -0.1)),
+                collect_all=bool(body.get("collect_all", False)),
+            )
             if user_maze is not None:
                 m = np.asarray(user_maze, dtype=np.uint8)
                 env = maze_mod.MazeEnvironment(
                     width=m.shape[1], height=m.shape[0],
                     generator="open", ensure_solvable=False,
-                    seed=body.get("seed"),
+                    partial_view=body.get("partial"),
+                    seed=body.get("seed"), **feature_kw,
                 )
                 env.maze = m.copy()
                 env.start_pos = tuple(map(int, np.argwhere(m == 2)[0]))
@@ -180,18 +186,36 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
                     height=body.get("height", 8),
                     density=body.get("density", 0.2),
                     generator=body.get("generator", "random"),
-                    seed=body.get("seed"),
+                    n_treasures=body.get("n_treasures", 1),
+                    n_lava=body.get("n_lava", 0),
+                    partial_view=body.get("partial"),
+                    seed=body.get("seed"), **feature_kw,
                 )
+            agent_kw = {"discount_factor": body.get("gamma", 0.95)}
+            if body.get("agent_type") in ("drqn", "dtqn"):
+                agent_kw["learn_every"] = int(body.get("learn_every", 1))
             agent = train_mod.create_agent(body.get("agent_type", "q"), env,
-                                           discount_factor=body.get("gamma", 0.95))
+                                           **agent_kw)
+            max_steps = body.get("max_steps", 200)
             train_mod.train_agent(
                 env, agent,
                 num_episodes=body.get("num_episodes", 200),
-                max_steps=body.get("max_steps", 200),
+                max_steps=max_steps,
                 bus=app.state.bus,
                 policy_snapshot_every=body.get("policy_snapshot_every", 25),
+                random_start=bool(body.get("random_start", False)),
                 should_stop=lambda: app.state.runs.get(run_id, {}).get("stop"),
             )
+            # Victory lap: stream the trained agent playing greedily so the
+            # user immediately SEES the result of training.
+            if not app.state.runs.get(run_id, {}).get("stop"):
+                app.state.bus.publish(RunEvent(kind="replay",
+                                               info={"run_id": run_id}))
+                agent.set_deterministic(True)
+                for ep in range(int(body.get("replay_episodes", 2))):
+                    train_mod.simulate_episode_streaming(
+                        env, agent, app.state.bus,
+                        episode=ep, max_steps=max_steps, at_start=True)
             app.state.bus.publish(RunEvent(kind="end", info={"run_id": run_id}))
 
         t = threading.Thread(target=_train, daemon=True)

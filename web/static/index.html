@@ -2,15 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>deepMaze viewer</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%234ea8ff'/%3E%3Cpath d='M3 3h2v2H3zm0 4h2v2H3zm4 0h2v2H7zm4 0h2v2h-2zm0-4h2v2h-2zM3 11h2v2H3zm4 0h2v2H7zm4 0h2v2h-2z' fill='%23000'/%3E%3C/svg%3E">
+  <title>deepMaze — training lab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2341e88d'/%3E%3Cpath d='M3 3h2v2H3zm0 4h2v2H3zm4 0h2v2H7zm4 0h2v2h-2zm0-4h2v2h-2zM3 11h2v2H3zm4 0h2v2H7zm4 0h2v2h-2z' fill='%23000'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="/static/config.js"></script>
 </head>
 <body class="app">
   <header class="topbar">
-    <h1>deepMaze</h1>
+    <h1>deep<span>Maze</span></h1>
     <nav>
       <a href="/" class="active">Train</a>
       <a href="/runs">Runs</a>
@@ -22,7 +25,7 @@
   <main class="three-pane">
     <!-- left: maze board + memory strip -->
     <section class="pane board">
-      <canvas id="maze" width="480" height="480"></canvas>
+      <canvas id="maze" width="560" height="560"></canvas>
 
       <div class="memory-strip">
         <div class="memory-label" id="memLabel">memory: —</div>
@@ -39,57 +42,92 @@
 
       <div class="legend">
         <span class="dot wall"></span>wall
-        <span class="dot floor"></span>floor
-        <span class="dot start"></span>start
-        <span class="dot goal"></span>goal
-        <span class="dot lava"></span>lava
-        <span class="dot agent"></span>agent
+        <span>🏠 start</span>
+        <span>💎 treasure</span>
+        <span>🔥 lava</span>
+        <span>🤖 agent</span>
       </div>
     </section>
 
-    <!-- center: editor + controls -->
+    <!-- center: mission console -->
     <section class="pane controls-pane">
-      <div class="mode-toggle">
-        <label><input type="radio" name="mode" value="train" checked> Train new</label>
-        <label><input type="radio" name="mode" value="inference"> Load pretrained</label>
+      <div class="mode-toggle" role="tablist">
+        <label class="mode-tab"><input type="radio" name="mode" value="train" checked><span>⚡ Train new</span></label>
+        <label class="mode-tab"><input type="radio" name="mode" value="inference"><span>▶ Watch trained</span></label>
       </div>
 
-      <div class="toolbar">
-        <span class="tb-label">paint:</span>
-        <button data-paint="1" class="paint-btn active" title="floor">floor</button>
-        <button data-paint="0" class="paint-btn" title="wall">wall</button>
-        <button data-paint="2" class="paint-btn" title="start">start</button>
-        <button data-paint="3" class="paint-btn" title="goal">goal</button>
-        <button data-paint="4" class="paint-btn" title="lava">lava</button>
-        <span class="tb-sep"></span>
-        <button id="regen">regenerate</button>
-        <button id="resetEdits">reset edits</button>
-      </div>
+      <div id="trainPanel">
+        <fieldset class="console-group">
+          <legend>presets</legend>
+          <div class="preset-row">
+            <button class="preset" data-preset="cozy">cozy<small>8×8 · 120 ep</small></button>
+            <button class="preset active" data-preset="classic">classic<small>16×16 · 300 ep</small></button>
+            <button class="preset" data-preset="vast">vast<small>24×24 · 600 ep</small></button>
+          </div>
+        </fieldset>
 
-      <div class="config-grid" id="trainPanel">
-        <label>generator
-          <select id="generator">
-            <option value="dfs" selected>dfs</option>
-            <option value="random">random</option>
-            <option value="open">open</option>
-          </select>
-        </label>
-        <label>agent
-          <select id="agent">
-            <option>q</option><option>dqn</option><option>ppo</option>
-            <option>drqn</option><option>dtqn</option>
-          </select>
-        </label>
-        <label>w<input id="w" type="number" value="8" min="5" max="30"></label>
-        <label>h<input id="h" type="number" value="8" min="5" max="30"></label>
-        <label>density<input id="density" type="number" value="0.2" step="0.05" min="0" max="0.9"></label>
-        <label>n_treasures<input id="n_treasures" type="number" value="1" min="1" max="10"></label>
-        <label>episodes<input id="episodes" type="number" value="80" min="1"></label>
-        <label>max steps<input id="max_steps" type="number" value="60" min="10"></label>
-        <label>partial K<input id="partial" type="number" value="" min="0" max="5"></label>
-        <label>n_lava<input id="n_lava" type="number" value="0" min="0"></label>
-        <button id="train" class="primary">Train</button>
-        <button id="stop" style="display:none">Stop</button>
+        <fieldset class="console-group">
+          <legend>world</legend>
+          <div class="config-grid">
+            <label>generator
+              <select id="generator">
+                <option value="dfs" selected>dfs corridors</option>
+                <option value="random">random walls</option>
+                <option value="open">open field</option>
+              </select>
+            </label>
+            <label>size
+              <span class="pair">
+                <input id="w" type="number" value="16" min="5" max="30">
+                <span class="x">×</span>
+                <input id="h" type="number" value="16" min="5" max="30">
+              </span>
+            </label>
+            <label>density<input id="density" type="number" value="0.2" step="0.05" min="0" max="0.9"></label>
+            <label>💎 treasures<input id="n_treasures" type="number" value="2" min="1" max="10"></label>
+            <label>🔥 lava<input id="n_lava" type="number" value="0" min="0"></label>
+            <label class="check-line"><input type="checkbox" id="collectAll"> collect all 💎</label>
+          </div>
+          <div class="toolbar">
+            <span class="tb-label">paint:</span>
+            <button data-paint="1" class="paint-btn active" title="floor">floor</button>
+            <button data-paint="0" class="paint-btn" title="wall">wall</button>
+            <button data-paint="2" class="paint-btn" title="start">🏠</button>
+            <button data-paint="3" class="paint-btn" title="goal">💎</button>
+            <button data-paint="4" class="paint-btn" title="lava">🔥</button>
+            <span class="tb-sep"></span>
+            <button id="regen">regenerate</button>
+            <button id="resetEdits">reset</button>
+          </div>
+        </fieldset>
+
+        <fieldset class="console-group">
+          <legend>agent</legend>
+          <div class="config-grid">
+            <label>algorithm
+              <select id="agent">
+                <option value="q">q — tabular</option>
+                <option value="dqn" selected>dqn — neural</option>
+                <option value="ppo">ppo — policy grad</option>
+                <option value="drqn">drqn — memory (lstm)</option>
+                <option value="dtqn">dtqn — memory (attn)</option>
+              </select>
+            </label>
+            <label>partial view K<input id="partial" type="number" value="" min="0" max="5" placeholder="full"></label>
+            <label class="check-line"><input type="checkbox" id="shaping" checked> reward shaping <em>(guides early search)</em></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="console-group">
+          <legend>budget</legend>
+          <div class="config-grid">
+            <label>episodes<input id="episodes" type="number" value="300" min="1"></label>
+            <label>max steps<input id="max_steps" type="number" value="150" min="10"></label>
+          </div>
+        </fieldset>
+
+        <button id="train" class="primary launch">⚡ TRAIN<small>watch it learn live — then it plays</small></button>
+        <button id="stop" class="stop-btn" style="display:none">■ STOP</button>
       </div>
 
       <div class="config-grid" id="inferencePanel" style="display:none">
@@ -113,7 +151,7 @@
       </div>
     </section>
 
-    <!-- right: live charts -->
+    <!-- right: live telemetry -->
     <section class="pane charts">
       <div class="chart-cell"><canvas id="rewardChart"></canvas></div>
       <div class="chart-cell"><canvas id="lengthChart"></canvas></div>
