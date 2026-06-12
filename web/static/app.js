@@ -62,7 +62,22 @@ function blankMaze(w, h) {
 function cloneMaze(m) { return m.map(r => r.slice()); }
 function cellSize() { return Math.floor(Math.min(canvas.width / W, canvas.height / H)); }
 
+function fitCanvas() {
+  // Size the canvas to fill the board pane while keeping cells square.
+  const wrap = $("boardWrap");
+  if (!wrap) return;
+  const box = wrap.getBoundingClientRect();
+  if (box.width < 40 || box.height < 40) return;
+  const cell = Math.max(6, Math.floor(Math.min((box.width - 4) / W,
+                                               (box.height - 4) / H)));
+  const cw = cell * W, ch = cell * H;
+  if (canvas.width !== cw || canvas.height !== ch) {
+    canvas.width = cw; canvas.height = ch;
+  }
+}
+
 function draw() {
+  fitCanvas();
   const s = cellSize();
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -358,11 +373,14 @@ function startStream() {
   es.onerror = () => { $("status").textContent = "stream closed"; };
 }
 
+new ResizeObserver(() => draw()).observe($("boardWrap"));
+window.addEventListener("resize", () => draw());
+
 // --- presets --------------------------------------------------------------
 const PRESETS = {
-  cozy:    { w: 8,  h: 8,  episodes: 120, max_steps: 60,  n_treasures: 1 },
-  classic: { w: 16, h: 16, episodes: 300, max_steps: 150, n_treasures: 2 },
-  vast:    { w: 24, h: 24, episodes: 600, max_steps: 300, n_treasures: 3 },
+  cozy:    { w: 12, h: 8,  episodes: 120, max_steps: 80,  n_treasures: 1 },
+  classic: { w: 22, h: 14, episodes: 300, max_steps: 200, n_treasures: 2 },
+  vast:    { w: 30, h: 20, episodes: 600, max_steps: 400, n_treasures: 3 },
 };
 document.querySelectorAll(".preset").forEach(btn => {
   btn.addEventListener("click", async () => {
