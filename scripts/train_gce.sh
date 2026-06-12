@@ -51,17 +51,27 @@ for i in \$(seq 1 60); do nvidia-smi && break; sleep 10; done
 
 git clone --depth 1 -b ${BRANCH} https://github.com/juan-garassino/deepMaze.git /opt/deepMaze
 cd /opt/deepMaze
-/opt/conda/bin/pip install -q -r requirements.txt mlflow
+
+# Newer DLVM images dropped /opt/conda — find whichever python carries torch.
+PY=""
+for cand in /opt/conda/bin/python /usr/bin/python3 \$(command -v python3); do
+  if [ -x "\$cand" ] && "\$cand" -c "import torch" 2>/dev/null; then PY="\$cand"; break; fi
+done
+PY=\${PY:-\$(command -v python3)}
+echo "using python: \$PY"
+"\$PY" -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())" || true
+"\$PY" -m pip install -q -r requirements.txt mlflow
 
 export OUTPUT_BASE=/opt/dm-out
 ${TRAIN_VARS}
 export RUN_TAG=${RUN_TAG}
 
 # spot-preemption protection: sync partial artifacts every 5 min
+mkdir -p /opt/dm-out
 ( while true; do sleep 300; gsutil -m -q rsync -r /opt/dm-out ${GCS_DEST} || true; done ) &
 SYNC_PID=\$!
 
-/opt/conda/bin/python scripts/train_runpod.py
+"\$PY" scripts/train_runpod.py
 STATUS=\$?
 
 kill \$SYNC_PID || true
