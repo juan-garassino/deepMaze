@@ -13,6 +13,9 @@ resource "google_cloud_run_v2_service" "backend" {
   name     = var.service_name
   location = var.region
 
+  # Show-and-destroy workspace policy: the service must be destroyable.
+  deletion_protection = false
+
   template {
     scaling {
       min_instance_count = 0
