@@ -35,10 +35,7 @@ resource "google_cloud_run_v2_service" "backend" {
         }
       }
 
-      env {
-        name  = "PORT"
-        value = "8000"
-      }
+      # PORT is reserved — Cloud Run injects it from ports.container_port.
       env {
         name  = "CORS_ORIGINS"
         value = var.cors_origins
