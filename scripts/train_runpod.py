@@ -35,12 +35,8 @@ Env vars (all optional — defaults shown):
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
 import sys
-import time
-from collections import deque
 from pathlib import Path
 
 # Allow `from train import ...` regardless of cwd.
@@ -52,14 +48,7 @@ for sub in ("agents", "environment", "training", "utils", "config"):
 
 import mlflow
 import torch
-from bundles import module_of as _module_of
-from bundles import save_agent_model
-from bundles import warm_start as _warm_start
-from maze import MazeEnvironment, RenderMaze
-from recorders import ReplayRecorder
-from seeding import seed_everything
-from train import create_agent, evaluate_agent, simulate_episode, train_agent
-from viz_events import EpisodeEvent, EventBus
+from session import train_session
 
 # ─────────────────────────── config from env ────────────────────────────
 
@@ -156,14 +145,6 @@ SHOWCASE_FRAMES = _env("SHOWCASE_FRAMES", 300, int)
 
 # ─────────────────────────── helpers ────────────────────────────────────
 
-def _fmt_eta(s: float) -> str:
-    if s < 90:
-        return f"{s:.0f}s"
-    if s < 3600:
-        return f"{s/60:.1f}m"
-    return f"{s/3600:.2f}h"
-
-
 def _hr(c: str = "─", w: int = 78) -> str:
     return c * w
 
@@ -183,187 +164,33 @@ def train_stage(agent_type: str, run_name: str,
                 num_episodes: int, max_steps: int,
                 seq_len: int = 0,
                 warm_start_path: str | None = None) -> dict:
-    print()
-    print(_hr("━"))
-    print(f"  {agent_type.upper()}  —  {run_name}  ({width}×{height}, {n_treasures} treasures)")
-    print(_hr("━"))
-
-    seed_everything(SEED)
-    env = MazeEnvironment(
-        width=width, height=height, density=DENSITY,
-        generator=GENERATOR, n_lava=N_LAVA, n_treasures=n_treasures,
-        collect_all=COLLECT_ALL, partial_view=PARTIAL, seed=SEED,
-        bump_penalty=BUMP_PENALTY,
-        aux_features=AUX_FEATURES, reward_shaping=REWARD_SHAPING,
-    )
     overrides = _agent_overrides(agent_type)
     if seq_len and agent_type in ("drqn", "dtqn"):
         overrides["seq_len"] = seq_len
         overrides["burn_in"] = max(2, seq_len // 2)
-    agent = create_agent(agent_type, env, **overrides)
-
-    if warm_start_path:
-        try:
-            _warm_start(agent, warm_start_path)
-            print(f"  warm start  : {warm_start_path}")
-        except Exception as e:
-            print(f"  warm start FAILED ({e}) — training from scratch")
-
-    print(f"  agent       : {type(agent).__name__}")
-    print(f"  budget      : {num_episodes} eps  max_steps={max_steps}")
-    print(f"  regen every : {REGENERATE_EVERY or 'off'}")
-    print(f"  overrides   : {overrides}")
-    print(_hr())
-
-    showcase_dir = SHOWCASE_BASE / run_name
-    showcase_dir.mkdir(parents=True, exist_ok=True)
-    sprites = RenderMaze.placeholder_sprites(SHOWCASE_SPRITE)
-
-    def render_snapshot(ep: int) -> Path:
-        agent.set_deterministic(True)
-        try:
-            _, positions, _, _ = simulate_episode(env, agent, max_steps=max_steps, at_start=True)
-        finally:
-            agent.set_deterministic(False)
-        full = [env.maze.copy() for _ in positions]
-        rm = RenderMaze(sprites)
-        ReplayRecorder(rm).feed(full, positions, None)
-        out = showcase_dir / f"ep{ep:05d}.webp"
-        rm.save(str(out), fmt="webp", sprite_size=SHOWCASE_SPRITE, max_frames=SHOWCASE_FRAMES)
-        return out
-
-    bus = EventBus()
-    reward_buf, length_buf, success_buf = deque(maxlen=WINDOW), deque(maxlen=WINDOW), deque(maxlen=WINDOW)
-    t0 = time.time()
-
-    def on_ep(ev: EpisodeEvent):
-        mlflow.log_metrics(
-            {"episode_reward": ev.total_reward,
-             "episode_length": ev.length,
-             "epsilon": ev.epsilon},
-            step=ev.episode,
-        )
-        reward_buf.append(ev.total_reward)
-        length_buf.append(ev.length)
-        success_buf.append(1 if ev.success else 0)
-
-        elapsed = time.time() - t0
-        eps_per_s = (ev.episode + 1) / max(elapsed, 1e-6)
-        eta = (num_episodes - ev.episode - 1) / max(eps_per_s, 1e-6)
-
-        if ev.episode % PRINT_EVERY == 0 or ev.episode == num_episodes:
-            avg_r = sum(reward_buf) / len(reward_buf)
-            succ = 100.0 * sum(success_buf) / len(success_buf)
-            extra = f" loss={ev.loss:.4f}" if ev.loss is not None else ""
-            print(
-                f"  ep {ev.episode:>5}/{num_episodes}  "
-                f"R={ev.total_reward:+6.2f}  R̄{WINDOW}={avg_r:+6.2f}  succ%={succ:5.1f}  "
-                f"len={ev.length:>4}  ε={ev.epsilon:.3f}{extra}  "
-                f"[{eps_per_s:5.1f} ep/s  ETA {_fmt_eta(eta)}]",
-                flush=True,
-            )
-
-        if ev.episode > 0 and (ev.episode % SHOWCASE_EVERY == 0):
-            snap = render_snapshot(ev.episode)
-            print(f"  ▣ SHOWCASE @ {ev.episode}  →  {snap}", flush=True)
-
-    bus.subscribe(on_ep)
-
-    best = {"succ": -1.0, "sd": None, "episode": None}
-
-    def on_eval(ep: int, m: dict):
-        mlflow.log_metrics({f"periodic_{k}": v for k, v in m.items()}, step=ep)
-        print(f"  ◈ eval @ {ep}: succ={m['success_rate']:.1%} "
-              f"R̄={m['mean_reward']:+.2f} "
-              f"revisit={m.get('revisit_rate', 0.0):.0%}", flush=True)
-        if m["success_rate"] > best["succ"]:
-            best["succ"] = m["success_rate"]
-            best["episode"] = ep
-            module = _module_of(agent)
-            if module is not None:
-                best["sd"] = {k: v.detach().cpu().clone()
-                              for k, v in module.state_dict().items()}
-
-    eval_every = EVAL_EVERY or max(50, num_episodes // 10)
-    eval_n = 3 if NANO else 10
-
-    with mlflow.start_run(run_name=run_name) as run:
-        mlflow.log_params(dict(
-            agent_type=agent_type, run_name=run_name,
-            width=width, height=height, n_treasures=n_treasures,
-            num_episodes=num_episodes, max_steps=max_steps,
-            partial=PARTIAL, generator=GENERATOR, density=DENSITY, n_lava=N_LAVA,
-            collect_all=COLLECT_ALL, seed=SEED,
-            random_start=RANDOM_START, bump_penalty=BUMP_PENALTY,
+    return train_session(
+        agent_type=agent_type, run_name=run_name,
+        env_kw=dict(
+            width=width, height=height, density=DENSITY,
+            generator=GENERATOR, n_lava=N_LAVA, n_treasures=n_treasures,
+            collect_all=COLLECT_ALL, partial_view=PARTIAL, seed=SEED,
+            bump_penalty=BUMP_PENALTY,
             aux_features=AUX_FEATURES, reward_shaping=REWARD_SHAPING,
-            regenerate_every=REGENERATE_EVERY, eval_regenerate=EVAL_REGENERATE,
-            warm_start_from=warm_start_path or "",
-            **overrides,
-        ))
-        train_agent(env, agent, num_episodes=num_episodes, max_steps=max_steps, bus=bus,
-                    random_start=RANDOM_START,
-                    regenerate_every=(REGENERATE_EVERY or None),
-                    eval_every=eval_every, eval_episodes=eval_n, on_eval=on_eval)
-        final_extra: dict = {}
-        mean_r, mean_l, succ = evaluate_agent(
-            env, agent, num_episodes=(5 if NANO else EVAL_EPISODES),
-            max_steps=max_steps,
-            regenerate_each=EVAL_REGENERATE,
-            metrics_out=final_extra,
-        )
-        mlflow.log_metrics({
-            "eval_mean_reward": mean_r,
-            "eval_mean_length": mean_l,
-            "eval_success_rate": succ,
-            "eval_revisit_rate": final_extra.get("revisit_rate", 0.0),
-        })
-        run_id = run.info.run_id
-
-    print()
-    print(_hr("━"))
-    print(f"  ✓ done in {_fmt_eta(time.time() - t0)}  eval: R={mean_r:+.2f}  succ={succ:.1%}")
-    print(_hr("━"))
-
-    out_dir = ASSETS_DIR / run_name
-    (out_dir / "viz").mkdir(parents=True, exist_ok=True)
-    (out_dir / "config.json").write_text(json.dumps(dict(
-        agent_type=agent_type, net=None,
-        maze_width=width, maze_height=height,
-        n_agents=1, density=DENSITY, generator=GENERATOR,
-        no_ensure_solvable=False, n_lava=N_LAVA, lava_reward=-1.0,
-        bump_penalty=BUMP_PENALTY,
-        aux_features=AUX_FEATURES, reward_shaping=REWARD_SHAPING,
-        partial=PARTIAL, n_treasures=n_treasures, collect_all=COLLECT_ALL,
-        seed=SEED, num_episodes=num_episodes, max_steps=max_steps,
-        eval_episodes=EVAL_EPISODES, learning_rate=None, discount_factor=0.99,
-        image_path=None, sprite_files=["sprites.png"], sprite_size=32,
-        replay_fmt="webp", frame_skip=1, max_frames=None,
-        policy_snapshot_every=50, live=False, live_web=False, web_port=8000,
-        run_id=run_id, run_name=run_name,
-        random_start=RANDOM_START, resume=None, eval_maze="same", eval_seeds=1,
-        agent_hp=overrides,
-    ), indent=2))
-
-    model_path = save_agent_model(agent, out_dir)
-    best_path = None
-    if best["sd"] is not None:
-        best_path = out_dir / "model.best.pt"
-        torch.save(best["sd"], best_path)
-        print(f"  best snapshot: succ={best['succ']:.1%} @ ep {best['episode']}")
-    final = render_snapshot(num_episodes)
-    shutil.copy(final, out_dir / "viz" / "replay.webp")
-
-    with mlflow.start_run(run_id=run_id):
-        mlflow.log_artifacts(str(out_dir), artifact_path=f"assets/{run_name}")
-
-    print(f"  bundle → {out_dir}")
-    return {
-        "agent_type": agent_type, "run_name": run_name, "run_id": run_id,
-        "eval_success_rate": succ, "eval_mean_reward": mean_r,
-        "best_success_rate": best["succ"],
-        "model_path": str(model_path),
-        "best_model_path": str(best_path) if best_path else None,
-    }
+        ),
+        num_episodes=num_episodes, max_steps=max_steps,
+        assets_dir=ASSETS_DIR, showcase_dir=SHOWCASE_BASE / run_name,
+        agent_overrides=overrides, warm_start_path=warm_start_path,
+        random_start=RANDOM_START,
+        regenerate_every=(REGENERATE_EVERY or None),
+        eval_episodes=(5 if NANO else EVAL_EPISODES),
+        eval_regenerate=EVAL_REGENERATE,
+        eval_every=EVAL_EVERY,
+        periodic_eval_episodes=(3 if NANO else 10),
+        seed=SEED, window=WINDOW, print_every=PRINT_EVERY,
+        showcase_every=SHOWCASE_EVERY, showcase_sprite=SHOWCASE_SPRITE,
+        showcase_frames=SHOWCASE_FRAMES,
+        mode_label="runpod",
+    )
 
 
 def main():
