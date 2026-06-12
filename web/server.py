@@ -30,7 +30,14 @@ for sub in ("agents", "environment", "training", "utils", "web", "config"):
         sys.path.insert(0, p)
 
 import numpy as np  # noqa: E402
-from viz_events import EpisodeEvent, EventBus, PolicyEvent, RunEvent, StepEvent  # noqa: E402
+from viz_events import (  # noqa: E402
+    EpisodeEvent,
+    EvalEvent,
+    EventBus,
+    PolicyEvent,
+    RunEvent,
+    StepEvent,
+)
 
 STATIC = os.path.join(_HERE, "static")
 
@@ -45,21 +52,10 @@ def _find_model_file(d: str) -> str | None:
 
 
 def _load_model_into(agent, path: str) -> None:
-    """Restore agent state from a saved file (mirrors main._resume_agent)."""
-    import pickle
-    if path.endswith(".pkl"):
-        with open(path, "rb") as f:
-            agent.Q.update(pickle.load(f))
-        return
-    import torch
-    module = getattr(agent, "model", None) or getattr(agent, "ac", None)
-    try:
-        state = torch.load(path, map_location=getattr(agent, "device", "cpu"),
-                           weights_only=True)
-    except (TypeError, RuntimeError):
-        # older torch (<2.1) or non-tensor pickle: fall back to legacy load
-        state = torch.load(path, map_location=getattr(agent, "device", "cpu"))
-    module.load_state_dict(state)
+    """Restore agent state from a saved file (bundles.warm_start; also syncs
+    the target net, which is harmless for greedy inference)."""
+    from bundles import warm_start
+    warm_start(agent, path)
 
 
 def _render_detail(name: str, results: dict, artifacts: list[str]) -> str:
@@ -95,7 +91,7 @@ def _event_to_json(ev) -> str:
     if isinstance(ev, StepEvent):
         payload = ev.to_json_full() if ev.step == 0 else ev.to_json_delta()
         return json.dumps(payload)
-    if isinstance(ev, (EpisodeEvent, PolicyEvent, RunEvent)):
+    if isinstance(ev, (EpisodeEvent, EvalEvent, PolicyEvent, RunEvent)):
         return json.dumps(ev.to_json())
     return json.dumps({"type": "unknown"})
 
@@ -344,6 +340,10 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
                 generator=cfg.get("generator", "random"),
                 n_lava=cfg.get("n_lava", 0),
                 lava_reward=cfg.get("lava_reward", -1.0),
+                bump_penalty=cfg.get("bump_penalty", -0.1),
+                # aux changes the obs shape — required or load_state_dict
+                # mismatches against the checkpoint
+                aux_features=cfg.get("aux_features", False),
                 partial_view=cfg.get("partial"),
                 n_treasures=cfg.get("n_treasures", 1),
                 collect_all=cfg.get("collect_all", False),
@@ -357,7 +357,10 @@ def create_app(bus: EventBus | None = None, manager=None) -> FastAPI:
                     env.maze = m.copy()
                     env.reset(at_start=True)
 
-            agent_kw = {}
+            # Effective hyperparameter overrides from training (architecture
+            # sizes etc.); create_agent drops unknown keys, so stale entries
+            # from old bundles are safe.
+            agent_kw = dict(cfg.get("agent_hp") or {})
             if cfg.get("net"):
                 agent_kw["net"] = cfg["net"]
             agent = train_mod.create_agent(cfg["agent_type"], env, **agent_kw)

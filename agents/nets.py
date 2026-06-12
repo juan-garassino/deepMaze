@@ -16,17 +16,18 @@ import torch.nn as nn
 VOCAB = 6
 
 
+def grid_onehot(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
+    """`x`: (N, h*w) or (N, h, w) tensor of integer cell labels, any numeric
+    dtype, any device. Returns (N, VOCAB, h, w) float32 one-hot ON THE SAME
+    DEVICE — no CPU/numpy round trip per forward."""
+    x = x.reshape(-1, h, w).long().clamp(0, VOCAB - 1)
+    return torch.nn.functional.one_hot(x, VOCAB).permute(0, 3, 1, 2).float()
+
+
 def encode_grid_batch(states: np.ndarray, h: int, w: int) -> torch.Tensor:
-    """`states` shape (N, h*w) or (N, h, w) of integer cell labels.
-    Returns float tensor (N, VOCAB, h, w) one-hot encoded."""
-    x = np.asarray(states)
-    if x.ndim == 2 and x.shape[1] == h * w:
-        x = x.reshape(-1, h, w)
-    n = x.shape[0]
-    flat = np.clip(x, 0, VOCAB - 1).astype(np.int64).reshape(n, -1)
-    onehot = np.zeros((n, flat.shape[1], VOCAB), dtype=np.float32)
-    onehot[np.arange(n)[:, None], np.arange(flat.shape[1])[None, :], flat] = 1.0
-    return torch.from_numpy(onehot.reshape(n, h, w, VOCAB).transpose(0, 3, 1, 2))
+    """Numpy wrapper around grid_onehot (kept for non-tensor callers)."""
+    return grid_onehot(torch.from_numpy(np.asarray(states).astype(np.int64)),
+                       h, w)
 
 
 class MLPHead(nn.Module):
@@ -43,11 +44,14 @@ class MLPHead(nn.Module):
 
 
 class CNNHead(nn.Module):
-    """3 conv layers + global avg pool + linear. Output_size = action_size."""
+    """3 conv layers + global avg pool + linear. Output_size = action_size.
+    aux_dim > 0: the flat input carries h*w grid cells + aux features; the
+    aux vector skips the conv trunk and joins at the head."""
 
-    def __init__(self, h: int, w: int, output_size: int):
+    def __init__(self, h: int, w: int, output_size: int, aux_dim: int = 0):
         super().__init__()
         self.h, self.w = h, w
+        self.aux_dim = aux_dim
         self.body = nn.Sequential(
             nn.Conv2d(VOCAB, 16, kernel_size=3, padding=1), nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=3, padding=1), nn.ReLU(),
@@ -55,35 +59,49 @@ class CNNHead(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
         )
-        self.head = nn.Linear(32, output_size)
+        self.head = nn.Linear(32 + aux_dim, output_size)
 
     def forward(self, x):
-        # x: flattened ints of shape (N, h*w) or already a 4-D float tensor.
+        # x: flattened ints of shape (N, h*w [+ aux]) or a 4-D float tensor.
+        aux = None
         if x.dim() == 2:
-            x = encode_grid_batch(x.cpu().numpy(), self.h, self.w).to(x.device)
-        return self.head(self.body(x))
+            if self.aux_dim:
+                aux = x[:, self.h * self.w:].float()
+                x = x[:, :self.h * self.w]
+            x = grid_onehot(x, self.h, self.w)
+        z = self.body(x)
+        if aux is not None:
+            z = torch.cat([z, aux], dim=-1)
+        return self.head(z)
 
 
 class CNNActorCritic(nn.Module):
     """Shared conv trunk + separate actor / critic heads."""
 
-    def __init__(self, h: int, w: int, action_size: int):
+    def __init__(self, h: int, w: int, action_size: int, aux_dim: int = 0):
         super().__init__()
         self.h, self.w = h, w
+        self.aux_dim = aux_dim
         self.trunk = nn.Sequential(
             nn.Conv2d(VOCAB, 16, kernel_size=3, padding=1), nn.Tanh(),
             nn.Conv2d(16, 32, kernel_size=3, padding=1), nn.Tanh(),
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
         )
-        self.actor = nn.Linear(32, action_size)
-        self.critic = nn.Linear(32, 1)
+        self.actor = nn.Linear(32 + aux_dim, action_size)
+        self.critic = nn.Linear(32 + aux_dim, 1)
 
     def forward(self, x):
+        aux = None
         if x.dim() == 2:
-            x = encode_grid_batch(x.cpu().numpy(), self.h, self.w).to(x.device)
+            if self.aux_dim:
+                aux = x[:, self.h * self.w:].float()
+                x = x[:, :self.h * self.w]
+            x = grid_onehot(x, self.h, self.w)
         z = self.trunk(x)
-        return torch.softmax(self.actor(z), dim=-1), self.critic(z)
+        if aux is not None:
+            z = torch.cat([z, aux], dim=-1)
+        return self.actor(z), self.critic(z)  # raw logits
 
 
 class MLPActorCritic(nn.Module):
@@ -98,4 +116,4 @@ class MLPActorCritic(nn.Module):
 
     def forward(self, x):
         h = self.shared(x)
-        return torch.softmax(self.actor(h), dim=-1), self.critic(h)
+        return self.actor(h), self.critic(h)  # raw logits

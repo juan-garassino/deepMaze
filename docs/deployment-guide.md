@@ -1,5 +1,7 @@
 # Deployment guide
 
+> **Pre-migration doc (2026-06-07):** GCP target is now **`garassino-ml`** / `europe-west1` in show-and-destroy mode under €25/mo workspace cap. Region/project references below describe pre-migration state. Canonical config in workspace root `CLAUDE.md` § "GCP architecture".
+
 Cold-start runbook: from an empty GCP project to a deployed inference service + MLflow + Slack-wired CI/CD. Steps are sequential; each one is idempotent.
 
 ## 0. Prerequisites
@@ -24,18 +26,16 @@ gh auth login
 Set the project + region you'll use throughout:
 
 ```bash
-export GCP_PROJECT_ID=deepmaze-prod      # whatever you named it
-export GCP_REGION=us-central1
+export GCP_PROJECT_ID=garassino-ml        # post-2026-06-07: shared ML project
+export GCP_REGION=europe-west1            # post-2026-06-07: consolidated region
 gcloud config set project "${GCP_PROJECT_ID}"
 ```
 
-Enable APIs (the MLflow deploy script does this too, but front-loading it surfaces quota issues earlier):
+Enable APIs (Cloud SQL + Artifact Registry are no longer needed under the new architecture — MLflow is file:// everywhere and images live on GHCR):
 
 ```bash
 gcloud services enable \
   run.googleapis.com \
-  sqladmin.googleapis.com \
-  artifactregistry.googleapis.com \
   storage.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
@@ -89,38 +89,32 @@ echo "  WIF_SERVICE_ACCOUNT  = ${SA_EMAIL}"
 
 The `principalSet://...` member binds to the **pool** (not the provider) so any provider under the pool can impersonate — the per-provider `--attribute-condition` is what actually scopes access to your repo.
 
-## 3. Provision MLflow
+## 3. Provision MLflow — SKIP under the new architecture
+
+> **Skip this step.** Post-2026-06-07, MLflow runs as a file:// store everywhere — Drive on Colab, `/workspace/mlruns/` on RunPod, `./local_runs/mlruns/` locally. No Cloud Run + Cloud SQL server. The `infra/mlflow/deploy.sh` script is **reference only** (guarded with `--force` to prevent accidental runs). If you ever need a persistent tracking server, swap Cloud SQL for Neon free tier per workspace policy.
+
+## 4. Storage layout + Cloud Run runtime service account
+
+Under the new architecture, **all deep-* projects share one bucket** (`garassino-ml-artifacts`) with per-project prefixes. deepMaze owns the `deepmaze/` prefix.
 
 ```bash
-export GAR_REPO=deepmaze
-export MLFLOW_BUCKET="${GCP_PROJECT_ID}-mlflow-artifacts"
-export SQL_INSTANCE=deepmaze-mlflow-sql
-export SQL_PASSWORD="$(openssl rand -base64 24)"
-echo "Save SQL_PASSWORD safely: ${SQL_PASSWORD}"
-export MLFLOW_SERVICE=mlflow-server
-
-bash infra/mlflow/deploy.sh
-```
-
-When it finishes, copy the printed URL — that's your `MLFLOW_TRACKING_URI`.
-
-> Public + unauthenticated by default per the spec. Front with IAP before any non-toy deploy.
-
-## 4. Create the assets bucket + Cloud Run runtime service account
-
-```bash
-export ASSETS_BUCKET="${GCP_PROJECT_ID}-deepmaze-assets"
+# Shared bucket — created once for the workspace, used by every deep-* project.
+export ASSETS_BUCKET="garassino-ml-artifacts"
+export ASSETS_PREFIX="deepmaze/"   # this project's subpath inside the shared bucket
 gcloud storage buckets create "gs://${ASSETS_BUCKET}" \
-  --location="${GCP_REGION}" --uniform-bucket-level-access
+  --location="${GCP_REGION}" --uniform-bucket-level-access 2>/dev/null || \
+  echo "Bucket already exists — fine, that's the point of the shared layout."
 
 # Runtime SA used by the inference Cloud Run service
 RUNTIME_SA="deepmaze-runtime"
 gcloud iam service-accounts create "${RUNTIME_SA}" --display-name="deepMaze runtime"
 RUNTIME_SA_EMAIL="${RUNTIME_SA}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 
+# Read-only access to just deepMaze's prefix (not the whole shared bucket).
 gcloud storage buckets add-iam-policy-binding "gs://${ASSETS_BUCKET}" \
   --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
-  --role="roles/storage.objectViewer"
+  --role="roles/storage.objectViewer" \
+  --condition="title=deepmaze-prefix-only,expression=resource.name.startsWith('projects/_/buckets/${ASSETS_BUCKET}/objects/${ASSETS_PREFIX}')"
 
 gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
   --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
@@ -139,44 +133,41 @@ In **Settings → Secrets and variables → Actions**:
 
 | Name | Value |
 |---|---|
-| `GCP_PROJECT_ID` | `${GCP_PROJECT_ID}` |
-| `WIF_PROVIDER` | the full provider resource path from step 2 |
-| `WIF_SERVICE_ACCOUNT` | `github-deployer@${GCP_PROJECT_ID}.iam.gserviceaccount.com` |
-| `GAR_REPO` | `deepmaze` |
+| `GCP_PROJECT_ID` | `garassino-ml` |
+| `WIF_PROVIDER` | the full provider resource path from `garassino-op`'s WIF pool (workspace policy: WIF lives in `garassino-op`, not here) |
+| `WIF_SERVICE_ACCOUNT` | the runtime SA email that the WIF pool can impersonate |
 | `CLOUD_RUN_SERVICE` | `deepmaze-backend` |
 | `CLOUD_RUN_SA_EMAIL` | `${RUNTIME_SA_EMAIL}` |
-| `SLACK_WEBHOOK_URL` | the Slack webhook from step 5 |
+| `SLACK_WEBHOOK_URL` | the Slack webhook from step 5 (optional) |
+| `TELEGRAM_BOT_TOKEN` | from @BotFather (optional, see CLAUDE.md § "Telegram notifications") |
+| `TELEGRAM_CHAT_ID` | your chat id (optional) |
+
+> `GAR_REPO` is **no longer required** — images live on GHCR (`ghcr.io/juan-garassino/deepmaze-backend`); the workflow uses the built-in `GITHUB_TOKEN` to push.
 
 **Repository variables:**
 
 | Name | Value |
 |---|---|
-| `GCP_REGION` | `us-central1` |
-| `ASSETS_BUCKET` | `${ASSETS_BUCKET}` |
+| `GCP_REGION` | `europe-west1` |
+| `ASSETS_BUCKET` | `garassino-ml-artifacts` |
+| `ASSETS_PREFIX` | `deepmaze/` |
 | `CORS_ORIGINS` | the deployed frontend origin, or `*` for demo |
 
 ## 7. First Colab training run
 
+Under the new architecture the notebook is **Drive-backed** — no Cloud MLflow, no GCS SA key in Colab. Bundles land in Drive; you copy them to the shared `garassino-ml-artifacts` bucket from your laptop with `gsutil` (or via a future GHA workflow).
+
 1. Open `notebooks/train_agent.ipynb` in Colab (`File → Open notebook → GitHub → juan-garassino/deepMaze → notebooks/train_agent.ipynb`).
 2. **Runtime → Change runtime type → GPU** (T4 is enough for DRQN; A100 helps DTQN with batch > 32).
-3. Set the Colab form fields in cell 1:
-   - `MLFLOW_TRACKING_URI` = the URL from step 3
-   - `ASSETS_BUCKET` = `${ASSETS_BUCKET}` from step 4 (leave blank to skip GCS push and download a zip instead)
-4. If `ASSETS_BUCKET` is set, give Colab GCS write access. Add this cell **after** the config cell and run it once:
-   ```python
-   from google.colab import files
-   import os
-   uploaded = files.upload()           # pick your SA JSON key
-   key = "/content/" + next(iter(uploaded))
-   os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key
-   print("GAC set to:", key)
+3. Set the form fields in cell 4. Defaults are fine for a first run; `IS_COLAB` is auto-detected in cell 2 and the notebook switches to Drive-backed mode automatically.
+4. **Runtime → Run all**.
+5. The bundle lands at `${DRIVE_BASE}/assets/<run_name>/` (defaults to `/content/drive/MyDrive/deepMaze/assets/...`). MLflow runs are next to it at `${DRIVE_BASE}/mlruns/`.
+6. From your laptop, after Drive sync settles, push the bundle to GCS so the Cloud Run backend can sync it:
+   ```bash
+   gsutil -m cp -r ~/Drive/MyDrive/deepMaze/assets/<run_name> \
+     gs://garassino-ml-artifacts/deepmaze/<run_name>
    ```
-   The key gets a Colab-local path and stays out of the `.ipynb` source.
-5. **Runtime → Run all**.
-6. Verify in the MLflow UI: open `${MLFLOW_TRACKING_URI}` → experiment `deepmaze` → your run with `eval_success_rate` logged.
-7. The bundle lands in one of two places:
-   - **GCS** (if `ASSETS_BUCKET` was set) — at `gs://${ASSETS_BUCKET}/${RUN_NAME}/`. The deployed backend syncs it on next instance start.
-   - **Colab `/content/${RUN_NAME}.zip`** — download via the file pane, unzip into `assets/<run_name>/`, `git add` + push.
+7. Restart the Cloud Run revision (`gcloud run services update-traffic deepmaze-backend --to-latest --region europe-west1`) so the entrypoint re-runs `sync_assets.py` and pulls the new bundle.
 
 ## 8. First deploy
 

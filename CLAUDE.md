@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **GCP migration note (2026-06-07):** Cloud target: **`garassino-ml`** / `europe-west1` (show-and-destroy under €25/mo workspace cap). MLflow / persistent state goes to external Neon free tier — no Cloud SQL. See workspace root `CLAUDE.md` § "GCP architecture".
+
 ## What this is
 
 A maze-based reinforcement learning playground with a full visualization stack — five agents (Q-learning / DQN / PPO / **DRQN** / **DTQN**, the latter two memory-equipped), sprite-based replay (WebP/GIF/MP4), training-curve plots, policy + visitation + behavioral-rollout heatmaps, and a FastAPI + vanilla-JS browser viewer. Supports live training **and** pretrained-model inference over the same SSE pipeline.
@@ -16,17 +18,19 @@ Ported and modernized from two local references; **do not** edit those reference
 
 ```
 deepMaze/
-├── agents/       base_agent / q_agent / dqn_agent / ppo_agent / drqn_agent / dtqn_agent / nets / encoders
-├── config/       (reserved)
-├── environment/  maze.py — MazeEnvironment + RenderMaze
-├── training/     train.py + recorders.py
+├── agents/       base_agent / recurrent (DRQN+DTQN shared base) / q_agent / dqn_agent / ppo_agent / drqn_agent / dtqn_agent / nets / encoders
+├── config/       hyperparameters.py — per-agent default dataclasses (defaults_for)
+├── environment/  maze.py — MazeEnvironment · render.py — RenderMaze (re-exported from maze)
+├── training/     train.py + recorders.py + session.py (shared train→eval→bundle cycle)
 ├── tests/        pytest suite
-├── utils/        manager.py + viz_events.py + visualizations.py + replay_buffer.py
+├── utils/        manager.py + viz_events.py + visualizations.py + replay_buffer.py + episode_buffer.py + bundles.py
 ├── web/          FastAPI server + static/ + otel.py (Cloud Trace instrumentation)
-├── notebooks/    train_agent.ipynb — Colab DRQN/DTQN trainer → MLflow + assets bundle
+├── notebooks/    train_agent.ipynb — dual-mode (Colab/local) DRQN/DTQN trainer + curriculum cell
 ├── flows/        Prefect flows — retrain / promote / smoke-test
-├── infra/        mlflow/ (Cloud Run + Cloud SQL + GCS) · cloudrun/service.yaml · prefect/
-├── docker/       entrypoint.sh (dev) + entrypoint.prod.sh (GCS asset sync + gunicorn)
+├── runpod/       Dockerfile + entrypoint + program.md (autonomous Claude self-improve)
+├── scripts/      train_runpod.py (standalone trainer) + setup-gh-secrets.sh
+├── infra/        cloudrun/service.yaml · terraform/ (show-and-destroy IaC) · mlflow/ (REFERENCE only) · prefect/
+├── docker/       entrypoint.sh (dev) + entrypoint.prod.sh (GCS asset sync + gunicorn) + sync_assets.py (ASSETS_PREFIX-aware)
 └── main.py       CLI entrypoint
 ```
 
@@ -34,7 +38,7 @@ deepMaze/
 
 ## Architectural seams
 
-**EventBus** (`utils/viz_events.py`). Single typed pub/sub channel — `StepEvent`, `EpisodeEvent`, `PolicyEvent`, `RunEvent`. Training emits; recorders consume. Adding a viz target = one `bus.subscribe(handler)`. Never plumb metrics through return values.
+**EventBus** (`utils/viz_events.py`). Single typed pub/sub channel — `StepEvent`, `EpisodeEvent`, `EvalEvent`, `PolicyEvent`, `RunEvent`. Training emits; recorders consume. Adding a viz target = one `bus.subscribe(handler)`. Never plumb metrics through return values.
 
 **Recorders** (`training/recorders.py`). `MetricsCollector`, `TrajectoryCollector`, `TqdmTail`, `ReplayRecorder`. Pure subscribers; stateless w.r.t. training.
 
@@ -90,13 +94,38 @@ python -m pytest tests/ -q
 docker compose -f infra/mlflow/docker-compose.local.yml up --build
 # → http://localhost:5000
 
-# MLflow tracking server — GCP (Cloud Run + Cloud SQL + GCS)
-bash infra/mlflow/deploy.sh    # see infra/mlflow/README.md for required env
+# MLflow tracking server — GCP (REFERENCE ONLY post-2026-06-07; needs --force)
+bash infra/mlflow/deploy.sh --force    # see infra/mlflow/README.md
 
 # Prefect flows (one-time pool setup; then deploy)
 prefect work-pool create --type process default-process
 prefect deploy --all --prefect-file flows/prefect.yaml
 python flows/promote_flow.py <mlflow-run-id>
+```
+
+## Operator commands (Makefile)
+
+Make is the canonical entry point for everything that crosses the network. Common workflow:
+
+```bash
+# Local — nano smoke-test on CPU (~2 min)
+make test          # 100 pytest, ruff
+make local         # 8×8 maze, 200 episodes — verify pipeline, not convergence
+
+# RunPod — push image, create pod, watch
+make ghcr-login    # docker login ghcr.io (paste GitHub PAT with write:packages)
+make push          # build runpod/Dockerfile → ghcr.io/juan-garassino/deepmaze-train:latest
+make runpod                                  # training only
+make runpod-improve API_KEY=sk-ant-...       # train + Claude self-improve loop
+make runpod-list / runpod-get POD_ID=...     # status; logs via `runpodctl ssh connect`
+
+# GitHub repo configuration (idempotent — sets the deterministic constants)
+make gh-secrets    # CORS_ORIGINS + WIF_SERVICE_ACCOUNT prompted; others auto-set
+
+# Cloud deploy via Terraform (show-and-destroy under €25/mo)
+cd infra/terraform && terraform init && \
+  terraform import google_storage_bucket.artifacts garassino-ml-artifacts && \
+  terraform apply -var "wif_pool_id=projects/634336216563/locations/global/workloadIdentityPools/gh-actions"
 ```
 
 ## Pretrained inference
@@ -121,8 +150,16 @@ UI flow:
 - On `/runs`, each card has a `▶ watch` shortcut that redirects to
   `/?inference=<name>` and auto-fires the watch flow.
 
-Heavy training (CNN/LSTM/Transformer) belongs in Colab. The local test
+Heavy training (CNN/LSTM/Transformer) belongs in Colab or RunPod. The local test
 suite trains only tiny tabular Q-agents on 5×5 mazes.
+
+## Training surfaces
+
+| Where | Purpose | Entry point | Notes |
+|---|---|---|---|
+| **Local** | Pipeline smoke-test (~2 min CPU) | `notebooks/train_agent.ipynb` (`NANO_LOCAL=True`) or `make local` | Auto-shrinks config to 8×8 maze / 200 eps. Verifies pipeline, NOT convergence. |
+| **Colab** | Real training, interactive | same notebook from Colab UI | Mounts Drive, file:// MLflow on Drive, see `notebooks/README.md`. |
+| **RunPod** | Real training, scriptable, autonomous | `runpod/Dockerfile` + `scripts/train_runpod.py` | Pattern from `005-products/020-autoresearch`. `make build push run`. Optional `CLAUDE_SELF_IMPROVE=true` mode runs Claude Code with `--dangerously-skip-permissions` after training, given `runpod/program.md` as the autonomous loop spec. `make improve API_KEY=sk-...`. |
 
 ## Docker
 
@@ -133,7 +170,7 @@ Two services orchestrated by `docker-compose.yml` (dev):
 | backend  | `Dockerfile`           | 8000 | `./maze_rl_runs`, `./assets`       |
 | frontend | `Dockerfile.frontend`  | 8080 | (none)                             |
 
-`Dockerfile.prod` builds the slim Cloud Run image: drops dev deps, adds gunicorn + OTEL + gsutil, and `docker/entrypoint.prod.sh` syncs `gs://${ASSETS_BUCKET}/` → `/app/assets/` at startup. CI builds + pushes it to Artifact Registry via `.github/workflows/deploy.yml`.
+`Dockerfile.prod` builds the slim Cloud Run image: drops dev deps, adds gunicorn + OTEL + google-cloud-storage (no gsutil), and `docker/entrypoint.prod.sh` syncs `gs://${ASSETS_BUCKET}/` → `/app/assets/` at startup. CI builds + pushes it to Artifact Registry via `.github/workflows/deploy.yml`.
 
 The frontend is plain nginx serving `web/static`. `${API_BASE_URL}` is
 substituted into `web/static/config.js` at container start; the JS reads
@@ -164,22 +201,46 @@ maze_rl_runs/run_YYYYMMDD_HHMMSS/
 - The web SSE handler subscribes a `queue.Queue`; when the queue saturates (>4096 events) the oldest is dropped to keep the live feed responsive. Saved artifacts are unaffected — they come from in-process subscribers.
 - Tabular Q-learning's policy heatmap uses each cell's observation as a key; unvisited cells show `NaN`. The `rollout.png` (behavioral viz) is the right answer for those agents.
 - Sprite sheet format: 16×16 source tiles; required sprite indices: `0=HOLE, 1=LAND, 2=LAVA, 3=EXIT, 4=AGENT`. Cell-value AGENT_BASE is 5 (agents are `5 + agent_index`).
-- Pretrained-model `config.json` must match the architecture: shape mismatches at `load_state_dict` time will raise.
-- Multi-treasure: `n_treasures > 1` places extras on reachable LAND; lava placement excludes all start→treasure paths. `collect_all=True` keeps the episode running until every treasure is consumed.
+- Pretrained-model `config.json` must match the architecture. Bundles exported post-2026-06-10 record the effective hyperparameter overrides under `agent_hp` plus `aux_features`/`bump_penalty`, and `/api/inference` replays them; older bundles without `agent_hp` only load if they used default architectures.
+- Multi-treasure: `n_treasures > 1` places extras on reachable LAND; lava placement excludes all start→treasure paths. `collect_all=True` keeps the episode running until every treasure is consumed — **the curriculum default**: stages run 2/4/6-treasure tours with `max_steps = 3·(w+h)·n_treasures`.
+- `generator` accepts a comma list (`"dfs,random"` — the curriculum default): one is sampled per maze build, so `regenerate_every=1` trains across topologies. `env.generator_used` records the pick.
+- `revisit_rate` (fraction of eval steps on already-visited cells, on `EpisodeResult`/`EvalEvent`/MLflow `eval_revisit_rate`) is the memory metric: it should fall as the recurrent memory forms; a memoryless policy re-walks corridors hunting remaining treasures.
+- Epsilon decays once per EPISODE via `BaseAgent.on_episode_end()` (default 0.995 → floor ~ep 600/920; `--exploration_decay 0.998` for 3000+ ep runs). Never decay inside `update()` — that was the bug that collapsed exploration inside episode 0.
+- `buffer_capacity` counts EPISODES for DRQN/DTQN (`utils/episode_buffer.py`, default 200 ≈ 120k transitions at 600 steps) but TRANSITIONS for DQN's `ReplayBuffer`.
+- DRQN burn-in starts from the R2D2-style **stored hidden state** recorded per transition (`EpisodeBuffer` `extra`/`init_extra`), not zeros. Curriculum stages scale the memory window via the optional 6th stage field `seq_len` (8/16/32; `burn_in` follows as `seq_len//2`; not shape-bearing, so weight transfer is unaffected).
+- Opt-in env features (off by default): `--reward_shaping` (potential-based, BFS distance to nearest remaining treasure — curriculum surfaces enable it; shapes only the training signal, not the observation), `--aux_features` (appends position + treasure direction/distance + remaining-fraction to the obs; **off everywhere by default — memory-first policy, keep it as an ablation knob only**; flat float32, rejected for tabular q), `--bump_penalty` (default −0.1; −0.01 on big mazes). `--max_steps` defaults to `3·(w+h)·n_treasures(collect_all)`. `--eval_every N` runs periodic greedy eval and drives `model.best.pt` selection.
 
 ## MLOps surfaces
 
 | Surface | What it does | Where |
 |---|---|---|
 | Colab notebook (A) | mounts Drive, clones repo, trains DRQN **and** DTQN in sequence, persists MLflow runs + `assets/<name>/` bundles to Drive (no GCP needed) | `notebooks/train_agent.ipynb` |
-| MLflow server (B) | experiment tracking + model registry; Cloud Run + Cloud SQL + GCS | `infra/mlflow/` |
-| Cloud Run backend (C) | slim prod image; GCS asset hot-sync at startup | `Dockerfile.prod` + `infra/cloudrun/service.yaml` |
-| GHA + Slack (E) | OIDC → GAR build/push → Cloud Run deploy + Slack notifications | `.github/workflows/deploy.yml` |
+| MLflow server (B) | experiment tracking + model registry — file:// stores everywhere (Drive on Colab, `/workspace/mlruns/` on RunPod, `./local_runs/mlruns/` locally). `infra/mlflow/` keeps the old Cloud Run + Cloud SQL recipe as reference but **is not used** under the post-2026-06-07 architecture (Cloud SQL is excluded; if revived, swap to Neon). | notebook + `scripts/train_runpod.py` |
+| RunPod training (D) | GPU container; standalone training via env vars; optional Claude self-improve loop | `runpod/Dockerfile` + `scripts/train_runpod.py` |
+| Cloud Run backend (C) | slim prod inference image; GCS asset hot-sync at startup. Image lives on **GHCR** (`ghcr.io/juan-garassino/deepmaze-backend`) per workspace policy — GAR is reserved for career-navigator. Cloud Run can't pull ghcr.io directly, so it pulls via the AR **remote repo** `ghcr-remote` (one-time setup, `infra/terraform/README.md`). First image push: `make push-backend` (NOT `make push`, which builds the RunPod training image). | `Dockerfile.prod` + `infra/cloudrun/service.yaml` |
+| GHA + Slack/Telegram (E) | OIDC (WIF via `garassino-op`) → GHCR build/push → Cloud Run deploy + Slack + Telegram notifications | `.github/workflows/deploy.yml` |
 | Prefect flows (D) | retrain (watch MLflow), promote (run_id → PR or GCS), daily smoke test | `flows/` |
 | OTEL / Cloud Trace (F) | per-request spans from FastAPI | `web/otel.py`; see `docs/observability.md` |
 
-Required env / secrets (set in GH repo secrets/vars for deploy; locally via `.env`):
-`GCP_PROJECT_ID`, `GCP_REGION`, `GAR_REPO`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `ASSETS_BUCKET`, `CORS_ORIGINS`, `MLFLOW_TRACKING_URI`, `SLACK_WEBHOOK_URL`, `PREFECT_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS` (local only). Auth on the public Cloud Run service + public MLflow is **out of scope** per the spec; tighten with IAP before any real deploy.
+Required env / secrets for deploy.yml (set in GH repo secrets/vars; locally via `.env`):
+- **GCP (WIF, no SA JSON keys per workspace policy):** `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`, `GCP_PROJECT_ID`, `GCP_REGION` (vars), `CLOUD_RUN_SERVICE`, `CLOUD_RUN_SA_EMAIL`, `ASSETS_BUCKET` (vars; the shared `garassino-ml-artifacts`), `ASSETS_PREFIX` (vars; e.g. `deepmaze/`), `CORS_ORIGINS` (vars).
+- **GHCR:** uses the built-in `GITHUB_TOKEN` (no extra secret). The image must be public for Cloud Run to pull without registry-auth — flip visibility at https://github.com/users/juan-garassino/packages/container/deepmaze-backend/settings.
+- **MLflow:** none for Cloud Run — file:// tracking is per-host now.
+- **Telegram (optional):** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (see § "Telegram notifications" below).
+- **Slack (optional):** `SLACK_WEBHOOK_URL`.
+- **Prefect:** `PREFECT_API_KEY`. **Local-only:** `GOOGLE_APPLICATION_CREDENTIALS`.
+
+`GAR_REPO` is no longer required (was for the old GAR-backed image path; deepMaze now uses GHCR). Auth on the public Cloud Run service is **out of scope** per the spec; tighten with IAP before any real deploy.
+
+## Telegram notifications (test + deploy workflows)
+
+`.github/workflows/test.yml` and `deploy.yml` send a Telegram message at the end of each run via the composite action at `.github/actions/telegram-notify/`. Skipped silently when the token is absent (PRs from forks, etc.).
+
+Required GitHub secrets:
+- `TELEGRAM_BOT_TOKEN` — from @BotFather (`/newbot` → copy token).
+- `TELEGRAM_CHAT_ID` — your chat id. Get it by messaging your bot once, then `curl https://api.telegram.org/bot<TOKEN>/getUpdates` and reading `message.chat.id`. Or use @userinfobot.
+
+Add both at `https://github.com/juan-garassino/deepMaze/settings/secrets/actions`. The Slack webhook is independent — both fire on deploy when configured.
 
 Reading order: **[`docs/architecture.md`](docs/architecture.md)** for the single-screen wiring → **[`docs/deployment-guide.md`](docs/deployment-guide.md)** for the cold-start runbook → **[`flows/README.md`](flows/README.md)** + **[`infra/README.md`](infra/README.md)** + **[`notebooks/README.md`](notebooks/README.md)** for per-area reference. Original design intent: **[`docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md`](docs/superpowers/specs/2026-06-03-deepmaze-mlops-design.md)**.
 

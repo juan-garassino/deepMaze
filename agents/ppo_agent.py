@@ -18,7 +18,8 @@ class PPOAgent(BaseAgent):
     def __init__(self, state_size, action_size, learning_rate=3e-4,
                  discount_factor=0.99, clip_eps=0.2, value_coef=0.5,
                  entropy_coef=0.01, n_steps=256, epochs=4, minibatches=4,
-                 gae_lambda=0.95, net: str = "mlp", grid_shape=None):
+                 gae_lambda=0.95, net: str = "mlp", grid_shape=None,
+                 aux_dim=0, **_ignored):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.state_size = state_size
@@ -40,7 +41,7 @@ class PPOAgent(BaseAgent):
                     raise ValueError("CNN needs grid_shape=(h,w) for non-square obs")
                 grid_shape = (side, side)
             self.ac = CNNActorCritic(grid_shape[0], grid_shape[1],
-                                     action_size).to(self.device)
+                                     action_size, aux_dim=aux_dim).to(self.device)
         else:
             self.ac = MLPActorCritic(state_size, action_size).to(self.device)
         self.optimizer = optim.Adam(self.ac.parameters(), lr=learning_rate)
@@ -54,20 +55,21 @@ class PPOAgent(BaseAgent):
     def move(self, state):
         s = torch.from_numpy(self._flat(state)).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            probs, _ = self.ac(s)
+            logits, _ = self.ac(s)
+        dist = Categorical(logits=logits)
         if self.deterministic:
-            a = int(probs.argmax(dim=-1).item())
-            self._last_logprob = float(torch.log(probs[0, a] + 1e-12).item())
-            return a
-        dist = Categorical(probs)
+            a = logits.argmax(dim=-1)
+            self._last_logprob = float(dist.log_prob(a).item())
+            return int(a.item())
         a = dist.sample()
         self._last_logprob = float(dist.log_prob(a).item())
         return int(a.item())
 
-    def update(self, state, action, reward, next_state, done):
+    def update(self, state, action, reward, next_state, done, truncated=False):
         self._buf.append((
             self._flat(state), int(action), float(reward),
-            self._flat(next_state), float(done), self._last_logprob,
+            self._flat(next_state), float(done), float(truncated),
+            self._last_logprob,
         ))
         if len(self._buf) >= self.n_steps:
             self._learn()
@@ -76,13 +78,30 @@ class PPOAgent(BaseAgent):
         if self._buf:
             self._learn()
 
+    @staticmethod
+    def _compute_gae(r, d, trunc, values, next_values, gamma, lam):
+        """GAE with the carry zeroed at BOTH terminals and truncations.
+        Truncated steps still bootstrap next_values[t] (the episode did not
+        end in the MDP), but the carry must not mix the next episode's TD
+        errors into this one."""
+        T = r.shape[0]
+        advantages = torch.zeros(T, device=r.device)
+        gae = torch.zeros((), device=r.device)
+        for t in reversed(range(T)):
+            nonterminal = 1.0 - d[t]
+            delta = r[t] + gamma * next_values[t] * nonterminal - values[t]
+            gae = delta + gamma * lam * nonterminal * (1.0 - trunc[t]) * gae
+            advantages[t] = gae
+        return advantages
+
     def _learn(self):
-        s, a, r, ns, d, old_lp = zip(*self._buf)
+        s, a, r, ns, d, trunc, old_lp = zip(*self._buf)
         s = torch.from_numpy(np.stack(s)).to(self.device)
         a = torch.tensor(a, dtype=torch.long, device=self.device)
         r = torch.tensor(r, dtype=torch.float32, device=self.device)
         ns = torch.from_numpy(np.stack(ns)).to(self.device)
         d = torch.tensor(d, dtype=torch.float32, device=self.device)
+        trunc = torch.tensor(trunc, dtype=torch.float32, device=self.device)
         old_lp = torch.tensor(old_lp, dtype=torch.float32, device=self.device)
 
         with torch.no_grad():
@@ -91,15 +110,9 @@ class PPOAgent(BaseAgent):
             values = values.squeeze(-1)
             next_values = next_values.squeeze(-1)
 
-        # GAE; resets at done.
         T = r.shape[0]
-        advantages = torch.zeros(T, device=self.device)
-        gae = torch.zeros((), device=self.device)
-        for t in reversed(range(T)):
-            nonterminal = 1.0 - d[t]
-            delta = r[t] + self.gamma * next_values[t] * nonterminal - values[t]
-            gae = delta + self.gamma * self.gae_lambda * nonterminal * gae
-            advantages[t] = gae
+        advantages = self._compute_gae(r, d, trunc, values, next_values,
+                                       self.gamma, self.gae_lambda)
         returns = advantages + values
         if T > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -112,9 +125,9 @@ class PPOAgent(BaseAgent):
             for start in range(0, T, mb_size):
                 mb = idx[start:start + mb_size]
                 mb_t = torch.as_tensor(mb, dtype=torch.long, device=self.device)
-                probs, vals = self.ac(s[mb_t])
+                logits, vals = self.ac(s[mb_t])
                 vals = vals.squeeze(-1)
-                dist = Categorical(probs)
+                dist = Categorical(logits=logits)
                 new_lp = dist.log_prob(a[mb_t])
                 ratio = torch.exp(new_lp - old_lp[mb_t])
                 surr1 = ratio * advantages[mb_t]
@@ -140,15 +153,15 @@ class PPOAgent(BaseAgent):
     def q_values(self, state):
         s = torch.from_numpy(self._flat(state)).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            probs, _ = self.ac(s)
-        return probs.cpu().numpy().flatten()
+            logits, _ = self.ac(s)
+        return torch.softmax(logits, dim=-1).cpu().numpy().flatten()
 
     def q_values_batch(self, states):
         flat = np.stack([self._flat(s) for s in states])
         x = torch.from_numpy(flat).to(self.device)
         with torch.no_grad():
-            probs, _ = self.ac(x)
-        return probs.cpu().numpy()
+            logits, _ = self.ac(x)
+        return torch.softmax(logits, dim=-1).cpu().numpy()
 
     def policy_snapshot(self):
         return {k: v.detach().cpu().clone() for k, v in self.ac.state_dict().items()}

@@ -1,5 +1,7 @@
 # deepMaze
 
+> **GCP migration note (2026-06-07):** When deployed, targets **`garassino-ml`** / `europe-west1` in show-and-destroy mode. `infra/mlflow/deploy.sh` already retargeted. Canonical config in workspace root `CLAUDE.md` § "GCP architecture".
+
 Maze reinforcement-learning playground. Five agents (Q / DQN / PPO / DRQN /
 DTQN), partial-observation + lava + multi-treasure environments, sprite
 replay (WebP/GIF/MP4), training-curve / policy / visitation / rollout PNGs,

@@ -12,7 +12,7 @@ class DQNAgent(BaseAgent):
                  discount_factor=0.99, exploration_rate=1.0,
                  exploration_decay=0.995, min_epsilon=0.01,
                  batch_size=64, target_sync=200, buffer_capacity=10000,
-                 net: str = "mlp", grid_shape=None):
+                 net: str = "mlp", grid_shape=None, aux_dim=0):
         super().__init__(action_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.state_size = state_size
@@ -33,8 +33,10 @@ class DQNAgent(BaseAgent):
                     raise ValueError("CNN needs grid_shape=(h,w) for non-square obs")
                 grid_shape = (side, side)
             self.h, self.w = grid_shape
-            self.model = CNNHead(self.h, self.w, action_size).to(self.device)
-            self.target_model = CNNHead(self.h, self.w, action_size).to(self.device)
+            self.model = CNNHead(self.h, self.w, action_size,
+                                 aux_dim=aux_dim).to(self.device)
+            self.target_model = CNNHead(self.h, self.w, action_size,
+                                        aux_dim=aux_dim).to(self.device)
         else:
             self.model = MLPHead(state_size, action_size).to(self.device)
             self.target_model = MLPHead(state_size, action_size).to(self.device)
@@ -53,7 +55,7 @@ class DQNAgent(BaseAgent):
             q = self.model(self._to_tensor(state))
         return int(q.argmax(dim=1).item())
 
-    def update(self, state, action, reward, next_state, done):
+    def update(self, state, action, reward, next_state, done, truncated=False):
         self.memory.push(state, action, reward, next_state, done)
         self._step += 1
         if len(self.memory) >= self.batch_size:
@@ -66,19 +68,20 @@ class DQNAgent(BaseAgent):
 
             current_q = self.model(s).gather(1, a)
             with torch.no_grad():
-                next_q = self.target_model(ns).max(1, keepdim=True)[0]
+                # Double DQN: online net selects, target net evaluates.
+                next_a = self.model(ns).argmax(1, keepdim=True)
+                next_q = self.target_model(ns).gather(1, next_a)
                 target = r + (1.0 - d) * self.gamma * next_q
 
-            loss = nn.functional.mse_loss(current_q, target)
+            loss = nn.functional.smooth_l1_loss(current_q, target)
             self.optimizer.zero_grad()
             loss.backward()
+            nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             self.last_loss = float(loss.item())
 
             if self._step % self.target_sync == 0:
                 self.target_model.load_state_dict(self.model.state_dict())
-
-        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
 
     def q_values(self, state):
         with torch.no_grad():

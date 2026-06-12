@@ -20,6 +20,9 @@ ignore = [
     "B905",  # zip(strict=) — not required for our use
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"scripts/train_runpod.py" = ["E402"]  # sys.path prepend before imports (repo convention)
+
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [

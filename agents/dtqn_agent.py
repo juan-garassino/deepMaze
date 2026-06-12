@@ -17,17 +17,14 @@ positions after a burn-in prefix.
 
 from __future__ import annotations
 
-import random
 from collections import deque
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from base_agent import BaseAgent
 from encoders import GridAttnEncoder
-
-NO_ACTION = -1
+from episode_buffer import NO_ACTION
+from recurrent import RecurrentQAgent
 
 
 class TransformerBlock(nn.Module):
@@ -44,10 +41,12 @@ class TransformerBlock(nn.Module):
         )
         self.last_attn: torch.Tensor | None = None  # (B, T, T) per-block weights
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
         h = self.ln1(x)
-        out, w = self.attn(h, h, h, attn_mask=mask, need_weights=True,
-                           average_attn_weights=True)
+        out, w = self.attn(h, h, h, attn_mask=mask,
+                           key_padding_mask=key_padding_mask,
+                           need_weights=True, average_attn_weights=True)
         self.last_attn = w.detach()
         x = x + out
         x = x + self.ff(self.ln2(x))
@@ -57,14 +56,15 @@ class TransformerBlock(nn.Module):
 class DTQN(nn.Module):
     def __init__(self, h: int, w: int, action_size: int,
                  dim: int = 128, heads: int = 4, layers: int = 2,
-                 max_ctx: int = 64, ff_mult: int = 2):
+                 max_ctx: int = 64, ff_mult: int = 2, aux_dim: int = 0):
         super().__init__()
         self.h, self.w = h, w
         self.action_size = action_size
         self.dim = dim
         self.max_ctx = max_ctx
+        self.aux_dim = aux_dim
 
-        self.enc = GridAttnEncoder(h, w, dim=dim)
+        self.enc = GridAttnEncoder(h, w, dim=dim, aux_dim=aux_dim)
         self.action_emb = nn.Embedding(action_size + 1, dim)
         self.pos_emb = nn.Parameter(torch.zeros(1, max_ctx, dim))
         nn.init.normal_(self.pos_emb, std=0.02)
@@ -76,23 +76,39 @@ class DTQN(nn.Module):
 
     @staticmethod
     def causal_mask(T: int, device) -> torch.Tensor:
-        m = torch.full((T, T), float("-inf"), device=device)
+        # bool mask (True = disallowed) so it composes with the bool
+        # key_padding_mask without dtype-mismatch warnings
+        m = torch.ones((T, T), dtype=torch.bool, device=device)
         return torch.triu(m, diagonal=1)
 
-    def forward(self, obs_seq: torch.Tensor, prev_actions: torch.Tensor):
-        """obs_seq: (B, T, h, w) long. prev_actions: (B, T) long (-1 = none).
-        Returns Q (B, T, A)."""
+    def _encode(self, obs_seq: torch.Tensor) -> torch.Tensor:
+        """obs_seq: (B, T, h, w) int grid OR (B, T, h*w+aux) flat float.
+        Returns (B, T, dim)."""
+        if obs_seq.dim() == 3:  # flat grid+aux form
+            B, T, F = obs_seq.shape
+            gl = self.h * self.w
+            grid = obs_seq[..., :gl].reshape(B * T, self.h, self.w).long()
+            aux = obs_seq[..., gl:].reshape(B * T, -1).float()
+            return self.enc(grid, aux).reshape(B, T, -1)
         B, T, H, W = obs_seq.shape
+        return self.enc(obs_seq.reshape(B * T, H, W)).reshape(B, T, -1)
+
+    def forward(self, obs_seq: torch.Tensor, prev_actions: torch.Tensor,
+                key_padding_mask: torch.Tensor | None = None):
+        """obs_seq: (B, T, h, w) long or (B, T, h*w+aux) float.
+        prev_actions: (B, T) long (-1 = none).
+        key_padding_mask: optional (B, T) bool, True = padded position.
+        Returns Q (B, T, A)."""
+        T = obs_seq.shape[1]
         if T > self.max_ctx:
             raise ValueError(f"context {T} > max_ctx {self.max_ctx}")
-        flat = obs_seq.reshape(B * T, H, W)
-        feats = self.enc(flat).reshape(B, T, -1)             # (B, T, dim)
+        feats = self._encode(obs_seq)                        # (B, T, dim)
         a_emb = self.action_emb((prev_actions + 1).clamp(min=0))
         pos = self.pos_emb[:, :T, :]
         z = feats + a_emb + pos
         mask = self.causal_mask(T, z.device)
         for blk in self.blocks:
-            z = blk(z, mask)
+            z = blk(z, mask, key_padding_mask)
         return self.head(self.ln_f(z))
 
     def last_layer_attention(self) -> torch.Tensor | None:
@@ -100,93 +116,50 @@ class DTQN(nn.Module):
         return self.blocks[-1].last_attn
 
 
-class EpisodeBuffer:
-    def __init__(self, capacity: int):
-        self.episodes: deque = deque(maxlen=capacity)
-        self._cur: list[tuple] = []
-        self._prev_a: int = NO_ACTION
-
-    def reset_episode(self):
-        if self._cur:
-            self.episodes.append(self._cur)
-        self._cur = []
-        self._prev_a = NO_ACTION
-
-    def add_step(self, obs, action, reward, next_obs, done):
-        self._cur.append((np.asarray(obs), int(self._prev_a), int(action),
-                          float(reward), np.asarray(next_obs), float(done)))
-        self._prev_a = int(action)
-        if done:
-            self.episodes.append(self._cur)
-            self._cur = []
-            self._prev_a = NO_ACTION
-
-    def __len__(self):
-        return len(self.episodes)
-
-    def sample(self, batch_size: int, seq_len: int):
-        eps = random.sample(self.episodes, min(batch_size, len(self.episodes)))
-        seqs = []
-        for ep in eps:
-            if len(ep) <= seq_len:
-                pad = [ep[-1]] * (seq_len - len(ep))
-                seqs.append(ep + pad)
-            else:
-                start = random.randint(0, len(ep) - seq_len)
-                seqs.append(ep[start:start + seq_len])
-        obs = np.stack([[s[0] for s in seq] for seq in seqs])
-        pa = np.array([[s[1] for s in seq] for seq in seqs], dtype=np.int64)
-        act = np.array([[s[2] for s in seq] for seq in seqs], dtype=np.int64)
-        rew = np.array([[s[3] for s in seq] for seq in seqs], dtype=np.float32)
-        nobs = np.stack([[s[4] for s in seq] for seq in seqs])
-        done = np.array([[s[5] for s in seq] for seq in seqs], dtype=np.float32)
-        return obs, pa, act, rew, nobs, done
-
-
-class DTQNAgent(BaseAgent):
+class DTQNAgent(RecurrentQAgent):
     def __init__(self, state_size, action_size, grid_shape,
                  learning_rate=3e-4, discount_factor=0.99,
                  exploration_rate=1.0, exploration_decay=0.995,
                  min_epsilon=0.05, batch_size=8, seq_len=16, burn_in=4,
                  target_sync=100, buffer_capacity=200,
-                 dim=128, heads=4, layers=2, max_ctx=64):
-        super().__init__(action_size)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.h, self.w = grid_shape
-        self.gamma = discount_factor
-        self.epsilon = exploration_rate
-        self.epsilon_decay = exploration_decay
-        self.min_epsilon = min_epsilon
-        self.batch_size = batch_size
-        self.seq_len = seq_len
-        self.burn_in = burn_in
-        self.target_sync = target_sync
+                 dim=128, heads=4, layers=2, max_ctx=64, aux_dim=0,
+                 learn_every=1):
+        super().__init__(action_size, grid_shape,
+                         learning_rate=learning_rate,
+                         discount_factor=discount_factor,
+                         exploration_rate=exploration_rate,
+                         exploration_decay=exploration_decay,
+                         min_epsilon=min_epsilon, batch_size=batch_size,
+                         seq_len=seq_len, burn_in=burn_in,
+                         target_sync=target_sync,
+                         buffer_capacity=buffer_capacity,
+                         learn_every=learn_every, aux_dim=aux_dim)
         self.max_ctx = max_ctx
-        self._step = 0
-
         self.model = DTQN(self.h, self.w, action_size, dim, heads, layers,
-                          max_ctx).to(self.device)
+                          max_ctx, aux_dim=aux_dim).to(self.device)
         self.target_model = DTQN(self.h, self.w, action_size, dim, heads,
-                                 layers, max_ctx).to(self.device)
-        self.target_model.load_state_dict(self.model.state_dict())
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-
-        self.buf = EpisodeBuffer(buffer_capacity)
+                                 layers, max_ctx,
+                                 aux_dim=aux_dim).to(self.device)
+        self._finalize_models()
         # inference context
         self._ctx_obs: deque = deque(maxlen=max_ctx)
         self._ctx_pa: deque = deque(maxlen=max_ctx)
         self._last_action = NO_ACTION
 
     # ------------------------------------------------------------------
-    def on_episode_start(self):
+    def _on_episode_boundary(self):
         self._ctx_obs.clear()
         self._ctx_pa.clear()
         self._last_action = NO_ACTION
-        self.buf.reset_episode()
 
     def _ctx_tensors(self):
-        obs = np.stack(list(self._ctx_obs)).reshape(1, -1, self.h, self.w)
         pa = np.array([list(self._ctx_pa)], dtype=np.int64)
+        if self.aux_dim:
+            obs = np.stack(list(self._ctx_obs)).astype(np.float32)
+            obs = obs.reshape(1, len(self._ctx_obs), -1)
+            return (torch.from_numpy(obs).to(self.device),
+                    torch.from_numpy(pa).to(self.device))
+        obs = np.stack(list(self._ctx_obs)).reshape(1, -1, self.h, self.w)
         return (torch.from_numpy(obs).long().to(self.device),
                 torch.from_numpy(pa).to(self.device))
 
@@ -204,36 +177,28 @@ class DTQNAgent(BaseAgent):
         self._last_action = a
         return a
 
-    def update(self, state, action, reward, next_state, done):
-        self.buf.add_step(state, action, reward, next_state, done)
-        self._step += 1
-        if done:
-            self.on_episode_start()  # also resets ctx; episode already committed
-        if len(self.buf) >= max(2, self.batch_size):
-            self._learn()
-        self.epsilon = max(self.min_epsilon,
-                           self.epsilon * self.epsilon_decay)
-
     def _learn(self):
-        obs, pa, act, rew, nobs, dn = self.buf.sample(
-            self.batch_size, self.seq_len)
-        B, T, H, W = obs.shape
-        if T > self.max_ctx:
-            T = self.max_ctx
-            obs, pa, act, rew, nobs, dn = (
-                obs[:, :T], pa[:, :T], act[:, :T], rew[:, :T], nobs[:, :T], dn[:, :T])
-        obs_t = torch.from_numpy(obs).long().to(self.device)
-        nobs_t = torch.from_numpy(nobs).long().to(self.device)
-        pa_t = torch.from_numpy(pa).to(self.device)
-        act_t = torch.from_numpy(act).to(self.device)
-        rew_t = torch.from_numpy(rew).to(self.device)
-        dn_t = torch.from_numpy(dn).to(self.device)
+        batch = self.buf.sample(self.batch_size, self.seq_len)
+        T = min(batch["obs"].shape[1], self.max_ctx)
+        obs_t = self._seq_tensor(batch["obs"][:, :T])
+        nobs_t = self._seq_tensor(batch["next_obs"][:, :T])
+        pa_t = torch.from_numpy(batch["prev_action"][:, :T]).to(self.device)
+        act_t = torch.from_numpy(batch["action"][:, :T]).to(self.device)
+        rew_t = torch.from_numpy(batch["reward"][:, :T]).to(self.device)
+        dn_t = torch.from_numpy(batch["done"][:, :T]).to(self.device)
+        mask_t = torch.from_numpy(batch["mask"][:, :T]).to(self.device)
         npa_t = act_t  # next-step prev_action = current action
+        # Pads are tail-only, so real positions never attend to garbage and
+        # no row is fully masked (position 0 is always real).
+        kpm = mask_t == 0  # (B, T) bool, True = padded
 
-        q_seq = self.model(obs_t, pa_t)
+        q_seq = self.model(obs_t, pa_t, key_padding_mask=kpm)
         with torch.no_grad():
-            qt_seq = self.target_model(nobs_t, npa_t)
-            max_next = qt_seq.max(dim=-1).values
+            # Double DQN: online net selects, target net evaluates.
+            qn_on = self.model(nobs_t, npa_t, key_padding_mask=kpm)
+            next_a = qn_on.argmax(dim=-1, keepdim=True)
+            qt_seq = self.target_model(nobs_t, npa_t, key_padding_mask=kpm)
+            max_next = qt_seq.gather(2, next_a).squeeze(-1)
 
         # Train only on positions after burn-in.
         bi = min(self.burn_in, T - 1)
@@ -241,15 +206,8 @@ class DTQNAgent(BaseAgent):
         current_q = q_seq[:, bi:].gather(2, a_use.unsqueeze(-1)).squeeze(-1)
         target_q = rew_t[:, bi:] + (1 - dn_t[:, bi:]) * self.gamma * max_next[:, bi:]
 
-        loss = nn.functional.mse_loss(current_q, target_q)
-        self.optimizer.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-        self.optimizer.step()
-        self.last_loss = float(loss.item())
-
-        if self._step % self.target_sync == 0:
-            self.target_model.load_state_dict(self.model.state_dict())
+        m_use = mask_t[:, bi:]
+        self._optimize(self._masked_td_loss(current_q, target_q, m_use))
 
     # ------------------------------------------------------------------
     def memory_snapshot(self):
@@ -263,22 +221,24 @@ class DTQNAgent(BaseAgent):
         return {"kind": "attention_row", "data": last_row.tolist()}
 
     def q_values(self, state):
-        x = np.asarray(state).reshape(1, 1, self.h, self.w)
-        x = torch.from_numpy(x).long().to(self.device)
+        x = self._obs_tensor(state)
         pa = torch.tensor([[NO_ACTION]], dtype=torch.long, device=self.device)
         with torch.no_grad():
             q = self.model(x, pa)
         return q.squeeze(0).squeeze(0).cpu().numpy()
 
     def q_values_batch(self, states):
-        x = np.stack([np.asarray(s).reshape(1, self.h, self.w) for s in states])
-        x = torch.from_numpy(x).long().to(self.device)
+        if self.aux_dim:
+            x = np.stack([np.asarray(s, dtype=np.float32).reshape(1, -1)
+                          for s in states])
+            x = torch.from_numpy(x).to(self.device)
+        else:
+            x = np.stack([np.asarray(s).reshape(1, self.h, self.w)
+                          for s in states])
+            x = torch.from_numpy(x).long().to(self.device)
         pa = torch.full((x.shape[0], 1), NO_ACTION,
                         dtype=torch.long, device=self.device)
         with torch.no_grad():
             q = self.model(x, pa)
         return q.squeeze(1).cpu().numpy()
 
-    def policy_snapshot(self):
-        return {k: v.detach().cpu().clone()
-                for k, v in self.model.state_dict().items()}

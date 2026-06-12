@@ -12,18 +12,26 @@ RenderMaze extended with:
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from cells import (  # noqa: F401 — re-exported; historic home of these names
+    AGENT_BASE,
+    EXIT,
+    HOLE,
+    LAND,
+    LAVA,
+    SPRITE_AGENT,
+    SPRITE_EXIT,
+    SPRITE_HOLE,
+    SPRITE_LAND,
+    SPRITE_LAVA,
+    START,
+)
 
-HOLE, LAND, START, EXIT, LAVA = 0, 1, 2, 3, 4
-AGENT_BASE = 5  # agents are encoded as AGENT_BASE + agent_index
-SPRITE_HOLE, SPRITE_LAND, SPRITE_LAVA, SPRITE_EXIT, SPRITE_AGENT = 0, 1, 2, 3, 4
-
-# Per-agent tints for multi-agent renders; index 0 = no tint.
-_AGENT_TINTS = [None, (255, 80, 80), (80, 255, 80), (80, 160, 255), (255, 200, 60)]
+# Length of the auxiliary feature vector appended to the observation when
+# aux_features=True: [row, col, unit_dr, unit_dc, dist, remaining_frac].
+AUX_DIM = 6
 
 
 class MazeEnvironment:
@@ -34,7 +42,12 @@ class MazeEnvironment:
                  generator: str = "random", ensure_solvable: bool = True,
                  n_lava: int = 0, lava_reward: float = -1.0,
                  partial_view: int | None = None,
-                 n_treasures: int = 1, collect_all: bool = False):
+                 n_treasures: int = 1, collect_all: bool = False,
+                 bump_penalty: float = -0.1,
+                 aux_features: bool = False,
+                 reward_shaping: bool = False,
+                 shaping_gamma: float = 0.99,
+                 shaping_coef: float = 0.01):
         if width < 5 or height < 5:
             raise ValueError("Maze must be at least 5x5")
         self.width = int(width)
@@ -48,14 +61,26 @@ class MazeEnvironment:
         self.partial_view = None if partial_view is None else int(partial_view)
         self.n_treasures = max(1, int(n_treasures))
         self.collect_all = bool(collect_all)
+        self.bump_penalty = float(bump_penalty)
+        self.aux_features = bool(aux_features)
+        self.reward_shaping = bool(reward_shaping)
+        self.shaping_gamma = float(shaping_gamma)
+        self.shaping_coef = float(shaping_coef)
+        self._dist_map: np.ndarray | None = None
+        self._nearest_src: np.ndarray | None = None
         self._rng = np.random.default_rng(seed)
         self.action_size = 4
 
+        self._remaining: set[tuple[int, int]] = set()
+        self.agent_positions: list[tuple[int, int]] = []
+        self._build_layout()
+        self.reset()
+
+    def _build_layout(self) -> None:
+        """(Re)build walls + treasures + lava + start. Uses current self._rng."""
         self.start_pos = (1, 1)
         # First treasure stays at the legacy corner; extras placed later.
-        self.treasure_positions: list[tuple[int, int]] = [
-            (self.height - 2, self.width - 2),
-        ]
+        self.treasure_positions = [(self.height - 2, self.width - 2)]
         self.maze = self._generate_maze()
         if self.ensure_solvable:
             self._carve_path_if_needed()
@@ -67,10 +92,14 @@ class MazeEnvironment:
             self._place_extra_treasures(self.n_treasures - 1)
         if self.n_lava > 0:
             self._place_lava(self.n_lava)
-        # tracks per-episode collected treasures (used when collect_all)
-        self._remaining: set[tuple[int, int]] = set()
-        self.agent_positions: list[tuple[int, int]] = []
-        self.reset()
+
+    def regenerate(self, seed: int | None = None) -> np.ndarray:
+        """Re-roll the maze layout. If seed is given, reseeds the rng first.
+        Returns the new observation after a reset()."""
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+        self._build_layout()
+        return self.reset()
 
     # back-compat alias
     @property
@@ -80,14 +109,24 @@ class MazeEnvironment:
     # ------------------------------------------------------------------
     # generators
     # ------------------------------------------------------------------
+    _GENERATORS = ("random", "dfs", "open")
+
     def _generate_maze(self) -> np.ndarray:
-        if self.generator == "random":
+        # Comma-separated generators ("dfs,random") sample one per build —
+        # with regenerate_every this trains across topologies, which is what
+        # actually buys cross-maze generalization.
+        choices = [g.strip() for g in self.generator.split(",") if g.strip()]
+        unknown = [g for g in choices if g not in self._GENERATORS]
+        if unknown or not choices:
+            raise ValueError(f"Unknown generator: {self.generator!r}")
+        gen = choices[int(self._rng.integers(len(choices)))] \
+            if len(choices) > 1 else choices[0]
+        self.generator_used = gen
+        if gen == "random":
             return self._gen_random()
-        if self.generator == "dfs":
+        if gen == "dfs":
             return self._gen_dfs()
-        if self.generator == "open":
-            return self._gen_open()
-        raise ValueError(f"Unknown generator: {self.generator!r}")
+        return self._gen_open()
 
     def _gen_random(self) -> np.ndarray:
         m = self._rng.choice([HOLE, LAND], size=(self.height, self.width),
@@ -288,12 +327,96 @@ class MazeEnvironment:
         else:
             for _ in range(self.n_agents):
                 self.agent_positions.append(self._find_empty_cell(self.agent_positions))
-            # Make agent 0 start at start_pos when possible.
-            if self.maze[self.start_pos] != HOLE:
-                taken = set(self.agent_positions[1:])
-                if self.start_pos not in taken:
-                    self.agent_positions[0] = self.start_pos
+        self._dist_map = None  # treasures restored — distances are stale
         return self.get_observation()
+
+    # ------------------------------------------------------------------
+    # shaping / aux features (multi-source BFS over remaining treasures)
+    # ------------------------------------------------------------------
+    @property
+    def aux_dim(self) -> int:
+        return AUX_DIM if self.aux_features else 0
+
+    @property
+    def grid_obs_shape(self) -> tuple[int, int]:
+        """Shape of the GRID part of the observation (window or full)."""
+        if self.partial_view is not None:
+            size = 2 * self.partial_view + 1
+            return (size, size)
+        return (self.height, self.width)
+
+    def split_observation(self, obs) -> tuple[np.ndarray, np.ndarray | None]:
+        """(grid_2d, aux_vec | None). Accepts both the 2-D grid form and the
+        flat grid+aux form; the grid comes back as integer cell labels."""
+        obs = np.asarray(obs)
+        if obs.ndim == 2:
+            return obs, None
+        gh, gw = self.grid_obs_shape
+        grid = obs[:gh * gw].reshape(gh, gw)
+        aux = obs[gh * gw:]
+        return grid.astype(np.int64), (aux if aux.size else None)
+
+    def _shaping_targets(self) -> set[tuple[int, int]]:
+        if self.collect_all:
+            return self._remaining
+        return {p for p in self.treasure_positions if self.maze[p] == EXIT}
+
+    def _get_dist_map(self) -> tuple[np.ndarray, np.ndarray]:
+        """(dist, nearest_src): BFS distance to the nearest remaining
+        treasure and that treasure's coordinates, per cell. Cached;
+        invalidated on reset/regenerate/treasure consumption."""
+        if self._dist_map is None:
+            from collections import deque
+            H, W = self.height, self.width
+            dist = np.full((H, W), np.inf, dtype=np.float32)
+            src = np.full((H, W, 2), -1, dtype=np.int16)
+            q = deque()
+            for (r, c) in self._shaping_targets():
+                dist[r, c] = 0.0
+                src[r, c] = (r, c)
+                q.append((r, c))
+            while q:
+                r, c = q.popleft()
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr, nc = r + dr, c + dc
+                    if (0 <= nr < H and 0 <= nc < W
+                            and self.maze[nr, nc] != HOLE
+                            and not np.isfinite(dist[nr, nc])):
+                        dist[nr, nc] = dist[r, c] + 1.0
+                        src[nr, nc] = src[r, c]
+                        q.append((nr, nc))
+            self._dist_map, self._nearest_src = dist, src
+        return self._dist_map, self._nearest_src
+
+    def _phi(self, pos: tuple[int, int]) -> float:
+        """Potential Φ(s) = -coef · BFS-dist to nearest remaining treasure.
+        Function of (position, remaining-set) — both state — so shaping
+        r += γΦ(s')-Φ(s) is policy-invariant (Ng-Harada-Russell)."""
+        dist, _ = self._get_dist_map()
+        d = float(dist[pos])
+        if not np.isfinite(d):
+            d = float(self.width + self.height)
+        return -self.shaping_coef * d
+
+    def _aux_vector(self) -> np.ndarray:
+        r, c = self.agent_positions[0]
+        dist, src = self._get_dist_map()
+        d = float(dist[r, c])
+        scale = float(self.width + self.height)
+        if np.isfinite(d) and src[r, c][0] >= 0:
+            tr, tc = int(src[r, c][0]), int(src[r, c][1])
+            dr, dc = tr - r, tc - c
+            norm = float(np.hypot(dr, dc))
+            unit = (dr / norm, dc / norm) if norm > 0 else (0.0, 0.0)
+            d_n = min(d / scale, 1.0)
+        else:
+            unit, d_n = (0.0, 0.0), 1.0
+        remaining = (len(self._remaining) / self.n_treasures
+                     if self.collect_all else 1.0)
+        return np.array([
+            r / max(self.height - 1, 1), c / max(self.width - 1, 1),
+            unit[0], unit[1], d_n, remaining,
+        ], dtype=np.float32)
 
     def get_observation(self) -> np.ndarray:
         """Full or partial (egocentric window) observation.
@@ -305,7 +428,7 @@ class MazeEnvironment:
         for i, pos in enumerate(self.agent_positions):
             full[pos] = AGENT_BASE + i
         if self.partial_view is None:
-            return full
+            return self._with_aux(full)
         K = self.partial_view
         size = 2 * K + 1
         out = np.full((size, size), HOLE, dtype=full.dtype)
@@ -315,7 +438,13 @@ class MazeEnvironment:
                 rr, cc = r + di, c + dj
                 if 0 <= rr < self.height and 0 <= cc < self.width:
                     out[di + K, dj + K] = full[rr, cc]
-        return out
+        return self._with_aux(out)
+
+    def _with_aux(self, grid: np.ndarray) -> np.ndarray:
+        if not self.aux_features:
+            return grid
+        return np.concatenate([grid.ravel().astype(np.float32),
+                               self._aux_vector()])
 
     def step(self, actions: int | Sequence[int]):
         if self.n_agents == 1 and isinstance(actions, (int, np.integer)):
@@ -326,6 +455,7 @@ class MazeEnvironment:
         rewards, dones = [], []
         for i, action in enumerate(actions):
             r, c = self.agent_positions[i]
+            phi_s = self._phi((r, c)) if self.reward_shaping else 0.0
             nr, nc = r, c
             if action == 0:   nr = max(0, r - 1)
             elif action == 1: nc = min(self.width - 1, c + 1)
@@ -337,7 +467,7 @@ class MazeEnvironment:
             blocked = cell == HOLE or target in self.agent_positions
             if blocked:
                 target = (r, c)
-                reward, done = -0.1, False
+                reward, done = self.bump_penalty, False
             elif cell == EXIT:
                 reward = 1.0
                 if self.collect_all:
@@ -347,12 +477,17 @@ class MazeEnvironment:
                     done = not self._remaining
                 else:
                     done = True
+                self._dist_map = None  # remaining-set changed
             elif cell == LAVA:
                 reward, done = self.lava_reward, True
             else:
                 reward, done = -0.01, False
 
             self.agent_positions[i] = target
+            if self.reward_shaping:
+                # Potential-based: r += γΦ(s') - Φ(s); Φ(terminal) = 0.
+                phi_ns = 0.0 if done else self._phi(target)
+                reward += self.shaping_gamma * phi_ns - phi_s
             rewards.append(reward)
             dones.append(done)
 
@@ -379,212 +514,5 @@ class MazeEnvironment:
         print()
 
 
-# ---------------------------------------------------------------------------
-# RenderMaze
-# ---------------------------------------------------------------------------
-
-
-class RenderMaze:
-    """Assemble sprite-tiled frames of maze states and save as GIF/WebP/MP4.
-
-    Frames are produced from (maze_state, agent_position_or_positions) tuples
-    pushed via .add(). Q-values, if supplied, are overlaid on the frame.
-    """
-
-    def __init__(self, cropped_images: list[Image.Image]):
-        if len(cropped_images) < 5:
-            raise ValueError(
-                f"Expected >=5 cropped sprites (HOLE,LAND,LAVA,EXIT,AGENT), "
-                f"got {len(cropped_images)}"
-            )
-        if not all(isinstance(im, Image.Image) for im in cropped_images):
-            raise TypeError("All sprites must be PIL Image instances")
-        self.sprites = cropped_images
-        self.frames: list[tuple[np.ndarray, object, np.ndarray | None]] = []
-
-    def add(self, maze: np.ndarray, position, q_values: np.ndarray | None = None):
-        self.frames.append((np.asarray(maze).copy(), position,
-                            None if q_values is None else np.asarray(q_values).copy()))
-
-    def __len__(self):
-        return len(self.frames)
-
-    def _tile(self, maze: np.ndarray, sprite_size: int) -> Image.Image:
-        h, w = maze.shape
-        canvas = Image.new("RGBA", (w * sprite_size, h * sprite_size))
-        for i in range(h):
-            for j in range(w):
-                v = int(maze[i, j])
-                if v >= AGENT_BASE: idx = SPRITE_AGENT
-                elif v == HOLE:     idx = SPRITE_HOLE
-                elif v == EXIT:     idx = SPRITE_EXIT
-                elif v == LAVA:     idx = SPRITE_LAVA
-                else:               idx = SPRITE_LAND
-                sp = self.sprites[idx]
-                if sp.size != (sprite_size, sprite_size):
-                    sp = sp.resize((sprite_size, sprite_size), Image.LANCZOS)
-                canvas.paste(sp.convert("RGBA"), (j * sprite_size, i * sprite_size))
-                if v >= AGENT_BASE:
-                    tint = _AGENT_TINTS[(v - AGENT_BASE) % len(_AGENT_TINTS)]
-                    if tint is not None:
-                        overlay = Image.new("RGBA", (sprite_size, sprite_size),
-                                            tint + (90,))
-                        canvas.alpha_composite(overlay, (j * sprite_size, i * sprite_size))
-        return canvas
-
-    def _overlay_q(self, frame: Image.Image, q: np.ndarray, sprite_size: int,
-                   step: int):
-        draw = ImageDraw.Draw(frame)
-        try:
-            font = ImageFont.truetype("Arial.ttf", max(10, sprite_size // 3))
-        except OSError:
-            font = ImageFont.load_default()
-        labels = ["UP", "RT", "DN", "LF"]
-        best = int(np.argmax(q))
-        worst = int(np.argmin(q))
-        x0 = 4
-        y0 = 4
-        for i, (lab, val) in enumerate(zip(labels, q)):
-            color = (80, 220, 80) if i == best else (220, 80, 80) if i == worst else (240, 240, 240)
-            draw.text((x0, y0 + i * (sprite_size // 3 + 2)),
-                      f"{lab} {val:+.2f}", fill=color, font=font)
-        draw.text((frame.size[0] - 60, 4), f"t={step}", fill=(255, 255, 255), font=font)
-
-    def render_frames(self, sprite_size: int = 32,
-                      frame_skip: int = 1, max_frames: int | None = None
-                      ) -> list[Image.Image]:
-        if not self.frames:
-            return []
-        keep_idx = self._frame_indices(frame_skip, max_frames)
-
-        # If the underlying maze never changes across kept frames, we render
-        # the static base once and only redraw the agent sprite per frame.
-        bases = [self.frames[i][0] for i in keep_idx]
-        first = bases[0]
-        static = all(b.shape == first.shape and (b == first).all() for b in bases)
-
-        base_rgba = None
-        if static:
-            base_rgba = self._tile(first, sprite_size)  # no agents
-
-        out = []
-        for idx in keep_idx:
-            maze, pos, q = self.frames[idx]
-            positions = pos if isinstance(pos, list) else [pos]
-            if static and base_rgba is not None:
-                img = base_rgba.copy()
-                for ai, p in enumerate(positions):
-                    if p is None:
-                        continue
-                    sp = self.sprites[SPRITE_AGENT]
-                    if sp.size != (sprite_size, sprite_size):
-                        sp = sp.resize((sprite_size, sprite_size), Image.LANCZOS)
-                    img.paste(sp.convert("RGBA"),
-                              (p[1] * sprite_size, p[0] * sprite_size))
-                    tint = _AGENT_TINTS[(ai) % len(_AGENT_TINTS)]
-                    if tint is not None:
-                        overlay = Image.new("RGBA", (sprite_size, sprite_size),
-                                            tint + (90,))
-                        img.alpha_composite(overlay,
-                                            (p[1] * sprite_size, p[0] * sprite_size))
-                img = img.convert("RGB")
-            else:
-                m = maze.copy()
-                for ai, p in enumerate(positions):
-                    if p is not None:
-                        m[p] = AGENT_BASE + ai
-                img = self._tile(m, sprite_size).convert("RGB")
-            if q is not None:
-                self._overlay_q(img, q, sprite_size, step=idx)
-            out.append(img)
-        return out
-
-    def _frame_indices(self, frame_skip: int, max_frames: int | None) -> list[int]:
-        n = len(self.frames)
-        idxs = list(range(0, n, max(1, int(frame_skip))))
-        if idxs and idxs[-1] != n - 1:
-            idxs.append(n - 1)
-        if max_frames and len(idxs) > max_frames:
-            stride = len(idxs) / max_frames
-            idxs = [idxs[int(i * stride)] for i in range(max_frames)]
-            if idxs[-1] != n - 1:
-                idxs[-1] = n - 1
-        return idxs
-
-    def save(self, path: str, fmt: str = "webp", sprite_size: int = 32,
-             frame_duration_ms: int = 80, frame_skip: int = 1,
-             max_frames: int | None = None) -> str:
-        """Render and write the animation to `path`. Returns the output path."""
-        frames = self.render_frames(sprite_size, frame_skip, max_frames)
-        if not frames:
-            raise RuntimeError("No frames to save (call .add() first).")
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        fmt = fmt.lower()
-        if fmt == "gif":
-            frames[0].save(path, format="GIF", save_all=True,
-                           append_images=frames[1:], duration=frame_duration_ms,
-                           loop=0, optimize=True, disposal=2)
-        elif fmt == "webp":
-            frames[0].save(path, format="WEBP", save_all=True,
-                           append_images=frames[1:], duration=frame_duration_ms,
-                           loop=0, quality=70, method=4)
-        elif fmt == "mp4":
-            try:
-                import imageio.v2 as imageio
-            except Exception as e:
-                raise RuntimeError(
-                    "MP4 output requires `imageio[ffmpeg]`. "
-                    "Install with `pip install imageio[ffmpeg]`."
-                ) from e
-            fps = max(1, int(round(1000 / max(1, frame_duration_ms))))
-            with imageio.get_writer(path, fps=fps, codec="libx264",
-                                    quality=8) as w:
-                for f in frames:
-                    w.append_data(np.asarray(f))
-        else:
-            raise ValueError(f"Unknown format: {fmt}")
-        return path
-
-    # Back-compat shim with old API (timestamped filename in cwd).
-    def show(self, sprite_size: int = 32, gif_duration: int = 60) -> str:
-        import datetime
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = f"moving_maze_{ts}.gif"
-        return self.save(path, fmt="gif", sprite_size=sprite_size,
-                         frame_duration_ms=gif_duration)
-
-    @staticmethod
-    def crop_images(input_path: str, image_names: list[str],
-                    tile_h: int = 16, tile_w: int = 16, sprite_size: int = 32,
-                    return_indexes: list[int] | None = None) -> list[Image.Image]:
-        out: list[Image.Image] = []
-        for name in image_names:
-            with Image.open(os.path.join(input_path, name)) as im:
-                iw, ih = im.size
-                for y in range(0, ih, tile_h):
-                    for x in range(0, iw, tile_w):
-                        crop = im.crop((x, y, x + tile_w, y + tile_h))
-                        out.append(crop.resize((sprite_size, sprite_size),
-                                               Image.LANCZOS).copy())
-        if return_indexes is not None:
-            return [out[i] for i in return_indexes]
-        return out
-
-    @staticmethod
-    def placeholder_sprites(sprite_size: int = 32) -> list[Image.Image]:
-        """Fallback solid-color sprites when no sprite sheet is provided."""
-        palette = {
-            SPRITE_HOLE:  (30, 30, 30),
-            SPRITE_LAND:  (200, 200, 200),
-            SPRITE_LAVA:  (220, 80, 30),
-            SPRITE_EXIT:  (240, 200, 40),
-            SPRITE_AGENT: (60, 130, 220),
-        }
-        out = []
-        for i in range(5):
-            img = Image.new("RGBA", (sprite_size, sprite_size), palette[i] + (255,))
-            d = ImageDraw.Draw(img)
-            d.rectangle([0, 0, sprite_size - 1, sprite_size - 1],
-                        outline=(0, 0, 0, 255), width=1)
-            out.append(img)
-        return out
+# Back-compat: RenderMaze historically lived in this module.
+from render import RenderMaze  # noqa: E402, F401

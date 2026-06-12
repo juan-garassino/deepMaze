@@ -1,0 +1,62 @@
+name: telegram-notify
+description: Send a Telegram message via the Bot API. Reads bot token + chat id from caller-passed inputs (typically secrets).
+
+inputs:
+  bot_token:
+    description: Telegram bot token from @BotFather
+    required: true
+  chat_id:
+    description: Telegram chat id (user, group, or channel)
+    required: true
+  status:
+    description: Job status — success / failure / cancelled / skipped
+    required: true
+  title:
+    description: Short label for the workflow step (e.g. "tests", "deploy")
+    required: true
+  details:
+    description: Optional extra context line (e.g. coverage %, success rate)
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Send Telegram message
+      shell: bash
+      env:
+        # Interpolating the commit message directly into the script body
+        # would let a crafted commit message inject shell — pass via env.
+        COMMIT_MSG: ${{ github.event.head_commit.message }}
+      run: |
+        set -euo pipefail
+
+        case "${{ inputs.status }}" in
+          success)   EMOJI="✅" ;;
+          failure)   EMOJI="❌" ;;
+          cancelled) EMOJI="⚠️" ;;
+          *)         EMOJI="ℹ️" ;;
+        esac
+
+        # Build the message body. Markdown V1 (kept simple — escapes only `_*[]()`).
+        # github.event.head_commit.message is multi-line; take first line only.
+        FIRST_LINE="$(echo "${COMMIT_MSG:-}" | head -n1 | head -c 120)"
+
+        MSG="${EMOJI} *deepMaze · ${{ inputs.title }}* — \`${{ inputs.status }}\` on \`${{ github.ref_name }}\`
+        \`${FIRST_LINE:-(no commit msg)}\`
+        \`${GITHUB_SHA::7}\` · @${{ github.actor }}"
+
+        if [ -n "${{ inputs.details }}" ]; then
+          MSG="${MSG}
+        ${{ inputs.details }}"
+        fi
+
+        MSG="${MSG}
+        [view run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+        curl --fail --silent --show-error -o /dev/null \
+          -X POST "https://api.telegram.org/bot${{ inputs.bot_token }}/sendMessage" \
+          --data-urlencode "chat_id=${{ inputs.chat_id }}" \
+          --data-urlencode "parse_mode=Markdown" \
+          --data-urlencode "disable_web_page_preview=true" \
+          --data-urlencode "text=${MSG}"

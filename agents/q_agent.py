@@ -23,14 +23,13 @@ class QAgent(BaseAgent):
             return np.random.randint(0, self.action_size)
         return int(np.argmax(self.Q[self._key(state)]))
 
-    def update(self, state, action, reward, next_state, done):
+    def update(self, state, action, reward, next_state, done, truncated=False):
         k, nk = self._key(state), self._key(next_state)
         current_q = self.Q[k][action]
         next_q = 0.0 if done else float(np.max(self.Q[nk]))
         td = reward + self.gamma * next_q - current_q
         self.Q[k][action] = current_q + self.lr * td
         self.last_loss = float(td * td)
-        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
 
     def q_values(self, state):
         return self.Q[self._key(state)].copy()
