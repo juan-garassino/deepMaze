@@ -38,6 +38,15 @@ resource "google_project_iam_member" "backend_trace" {
 // `gcloud run services replace` + `add-iam-policy-binding`: that needs
 // run.admin on the project and actAs on the runtime SA (an SA does not
 // implicitly have actAs on itself).
+// Deploying (and pulling) the image through the ghcr-remote AR repo needs
+// reader on Artifact Registry — the deployer identity is checked for
+// downloadArtifacts at `gcloud run services replace` time.
+resource "google_project_iam_member" "backend_ar_reader" {
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = "serviceAccount:${google_service_account.backend.email}"
+}
+
 resource "google_project_iam_member" "backend_run_admin" {
   project = var.project_id
   role    = "roles/run.admin"
