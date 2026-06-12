@@ -39,7 +39,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--maze_height", type=int, default=10)
     p.add_argument("--n_agents", type=int, default=1)
     p.add_argument("--density", type=float, default=0.2)
-    p.add_argument("--generator", choices=["random", "dfs", "open"], default="random")
+    p.add_argument("--generator", type=str, default="random",
+                   help="random | dfs | open, or a comma list (e.g. "
+                        "'dfs,random') sampled per maze build.")
     p.add_argument("--no_ensure_solvable", action="store_true")
     p.add_argument("--n_lava", type=int, default=0,
                    help="Number of LAVA cells (terminal -1) off the shortest path.")
@@ -98,20 +100,8 @@ def build_argparser() -> argparse.ArgumentParser:
 
 def _resume_agent(agent, path: str, mgr) -> None:
     """Load saved state into a freshly-created agent."""
-    import pickle
-
-    import torch
-    if path.endswith(".pkl"):
-        with open(path, "rb") as f:
-            agent.Q.update(pickle.load(f))
-    else:
-        module = getattr(agent, "model", None) or getattr(agent, "ac", None)
-        sd = torch.load(path, map_location=getattr(agent, "device", "cpu"))
-        module.load_state_dict(sd)
-        # Sync the target net too — otherwise the first target_sync window
-        # trains toward a randomly-initialized target.
-        if hasattr(agent, "target_model"):
-            agent.target_model.load_state_dict(sd)
+    from bundles import warm_start
+    warm_start(agent, path)
     mgr.log(f"Resumed agent state from {path}")
 
 

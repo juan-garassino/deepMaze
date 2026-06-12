@@ -94,3 +94,29 @@ def test_rebuild_tolerates_stale_agent_hp_keys(tmp_path):
                agent_hp=dict(batch_size=4, buffer_capacity=64,
                              not_a_real_key=123))
     _rebuild(cfg, model_path)  # create_agent drops the unknown key
+
+
+def test_bundles_warm_start_syncs_target(tmp_path):
+    from bundles import save_agent_model, warm_start
+    env = MazeEnvironment(**_TINY)
+    src = create_agent("dqn", env, batch_size=4, buffer_capacity=32)
+    path = save_agent_model(src, tmp_path)
+    assert path.name == "model.pt"
+    dst = create_agent("dqn", env, batch_size=4, buffer_capacity=32)
+    warm_start(dst, path)
+    sd_src, sd_tgt = src.model.state_dict(), dst.target_model.state_dict()
+    assert all(torch.equal(sd_src[k], sd_tgt[k]) for k in sd_src)
+
+
+def test_bundles_tabular_q_roundtrip(tmp_path):
+    from bundles import save_agent_model, warm_start
+    env = MazeEnvironment(**_TINY)
+    src = create_agent("q", MazeEnvironment(width=6, height=6,
+                                            generator="open", seed=0))
+    obs = env.reset(at_start=True)
+    src.update(obs, 1, 0.5, obs, False)
+    path = save_agent_model(src, tmp_path)
+    assert path.name == "model.pkl"
+    dst = create_agent("q", env)
+    warm_start(dst, path)
+    assert len(dst.Q) == len(src.Q)

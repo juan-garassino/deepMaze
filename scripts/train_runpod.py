@@ -52,6 +52,9 @@ for sub in ("agents", "environment", "training", "utils", "config"):
 
 import mlflow
 import torch
+from bundles import module_of as _module_of
+from bundles import save_agent_model
+from bundles import warm_start as _warm_start
 from maze import MazeEnvironment, RenderMaze
 from recorders import ReplayRecorder
 from seeding import seed_everything
@@ -173,22 +176,6 @@ def _agent_overrides(agent_type: str) -> dict:
     if NANO:
         out.update(_NANO_ARCH.get(agent_type, {}))
     return out
-
-
-def _module_of(agent):
-    return getattr(agent, "model", None) or getattr(agent, "ac", None)
-
-
-def _warm_start(agent, path: str) -> None:
-    if path.endswith(".pkl"):  # tabular Q
-        import pickle
-        with open(path, "rb") as f:
-            agent.Q.update(pickle.load(f))
-        return
-    sd = torch.load(path, map_location=getattr(agent, "device", "cpu"), weights_only=True)
-    _module_of(agent).load_state_dict(sd)
-    if hasattr(agent, "target_model"):
-        agent.target_model.load_state_dict(sd)
 
 
 def train_stage(agent_type: str, run_name: str,
@@ -357,14 +344,7 @@ def train_stage(agent_type: str, run_name: str,
         agent_hp=overrides,
     ), indent=2))
 
-    module = _module_of(agent)
-    if module is not None:
-        model_path = out_dir / "model.pt"
-        torch.save(module.state_dict(), model_path)
-    else:  # tabular Q
-        import pickle
-        model_path = out_dir / "model.pkl"
-        model_path.write_bytes(pickle.dumps(dict(agent.Q)))
+    model_path = save_agent_model(agent, out_dir)
     best_path = None
     if best["sd"] is not None:
         best_path = out_dir / "model.best.pt"
