@@ -25,7 +25,9 @@
   <main class="three-pane">
     <!-- left: maze board + memory strip -->
     <section class="pane board">
-      <canvas id="maze" width="560" height="560"></canvas>
+      <div class="board-canvas" id="boardWrap">
+        <canvas id="maze" width="560" height="560"></canvas>
+      </div>
 
       <div class="memory-strip">
         <div class="memory-label" id="memLabel">memory: —</div>
@@ -60,9 +62,9 @@
         <fieldset class="console-group">
           <legend>presets</legend>
           <div class="preset-row">
-            <button class="preset" data-preset="cozy">cozy<small>8×8 · 120 ep</small></button>
-            <button class="preset active" data-preset="classic">classic<small>16×16 · 300 ep</small></button>
-            <button class="preset" data-preset="vast">vast<small>24×24 · 600 ep</small></button>
+            <button class="preset" data-preset="cozy">cozy<small>12×8 · 120 ep</small></button>
+            <button class="preset active" data-preset="classic">classic<small>22×14 · 300 ep</small></button>
+            <button class="preset" data-preset="vast">vast<small>30×20 · 600 ep</small></button>
           </div>
         </fieldset>
 
@@ -78,9 +80,9 @@
             </label>
             <label>size
               <span class="pair">
-                <input id="w" type="number" value="16" min="5" max="30">
+                <input id="w" type="number" value="22" min="5" max="40">
                 <span class="x">×</span>
-                <input id="h" type="number" value="16" min="5" max="30">
+                <input id="h" type="number" value="14" min="5" max="40">
               </span>
             </label>
             <label>density<input id="density" type="number" value="0.2" step="0.05" min="0" max="0.9"></label>

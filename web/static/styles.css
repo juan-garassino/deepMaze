@@ -99,6 +99,10 @@ body.app::after {
 
 /* board */
 .board { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.board-canvas {
+  flex: 1 1 auto; min-height: 0; width: 100%;
+  display: flex; align-items: center; justify-content: center;
+}
 #maze {
   background: #000; cursor: crosshair;
   border: 1px solid var(--border-hot); border-radius: 4px;
