@@ -332,6 +332,9 @@ function startStream() {
       if (rewardChart.data.labels.length % 5 === 0) flushCharts();
       $("status").textContent =
         `ep ${ev.episode} R=${ev.total_reward.toFixed(2)} len=${ev.length}`;
+    } else if (ev.type === "run" && ev.kind === "replay") {
+      flushCharts();
+      $("status").textContent = "🤖 trained — victory lap!";
     } else if (ev.type === "run" && ev.kind === "end") {
       flushCharts(); $("status").textContent = "done";
       $("train").style.display = ""; $("stop").style.display = "none";
@@ -340,6 +343,25 @@ function startStream() {
   };
   es.onerror = () => { $("status").textContent = "stream closed"; };
 }
+
+// --- presets --------------------------------------------------------------
+const PRESETS = {
+  cozy:    { w: 8,  h: 8,  episodes: 120, max_steps: 60,  n_treasures: 1 },
+  classic: { w: 16, h: 16, episodes: 300, max_steps: 150, n_treasures: 2 },
+  vast:    { w: 24, h: 24, episodes: 600, max_steps: 300, n_treasures: 3 },
+};
+document.querySelectorAll(".preset").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const p = PRESETS[btn.dataset.preset];
+    if (!p) return;
+    document.querySelectorAll(".preset").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    $("w").value = p.w; $("h").value = p.h;
+    $("episodes").value = p.episodes; $("max_steps").value = p.max_steps;
+    $("n_treasures").value = p.n_treasures;
+    await generateMaze();
+  });
+});
 
 // --- train --------------------------------------------------------------
 $("train").addEventListener("click", async () => {
@@ -360,6 +382,11 @@ $("train").addEventListener("click", async () => {
     max_steps: +$("max_steps").value,
     n_lava: +$("n_lava").value,
     partial,
+    collect_all: $("collectAll").checked,
+    reward_shaping: $("shaping").checked,
+    bump_penalty: -0.01,
+    learn_every: 4,       // keeps memory agents responsive on small CPUs
+    random_start: true,
     maze,    // user-edited base
   };
   const r = await fetch(API("/api/runs"), {
