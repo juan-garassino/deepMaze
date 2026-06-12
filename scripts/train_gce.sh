@@ -27,7 +27,11 @@ MACHINE=${MACHINE:-n1-standard-4}
 
 TAG=$(date -u +%Y%m%d-%H%M%S)
 RUN_TAG=${RUN_TAG:-v$TAG}
-GCS_DEST="gs://${BUCKET}/deepmaze/gce/${RUN_TAG}"
+# Training workspace (mlruns, showcases, logs) — NOT under the serving
+# prefix, so the Cloud Run asset sync never downloads it.
+GCS_DEST="gs://${BUCKET}/deepmaze-runs/gce/${RUN_TAG}"
+# Finished bundles get PROMOTED here — the prefix the backend serves.
+SERVE_DEST="gs://${BUCKET}/deepmaze"
 
 if [ "${SMOKE:-0}" = "1" ]; then
   NAME="deepmaze-smoke-$TAG"
@@ -63,6 +67,7 @@ echo "using python: \$PY"
 "\$PY" -m pip install -q -r requirements.txt mlflow
 
 export OUTPUT_BASE=/opt/dm-out
+export MLFLOW_ALLOW_FILE_STORE=true   # new mlflow gates the file store
 ${TRAIN_VARS}
 export RUN_TAG=${RUN_TAG}
 
@@ -76,6 +81,16 @@ STATUS=\$?
 
 kill \$SYNC_PID || true
 gsutil -m -q rsync -r /opt/dm-out ${GCS_DEST} || true
+
+# Promote finished bundles into the serving prefix → they appear in the
+# Cloud Run backend's /api/models on its next cold start.
+if [ \$STATUS -eq 0 ] && [ -d /opt/dm-out/assets ]; then
+  for b in /opt/dm-out/assets/*/; do
+    name=\$(basename "\$b")
+    gsutil -m -q rsync -r "\$b" "${SERVE_DEST}/\$name" || true
+    echo "promoted bundle: ${SERVE_DEST}/\$name"
+  done
+fi
 gsutil cp /var/log/deepmaze-train.log ${GCS_DEST}/train.log || true
 echo "training exited \$STATUS — artifacts at ${GCS_DEST} — deleting instance"
 gcloud compute instances delete ${NAME} --zone=${ZONE} --quiet

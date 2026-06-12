@@ -78,8 +78,10 @@ workerPoolSpecs:
           pip install -q -r requirements.txt mlflow
           python scripts/train_runpod.py
       env:
+        - name: MLFLOW_ALLOW_FILE_STORE
+          value: "true"
         - name: OUTPUT_BASE
-          value: "/gcs/${BUCKET}/deepmaze/vertex/${RUN_TAG}"
+          value: "/gcs/${BUCKET}/deepmaze-runs/vertex/${RUN_TAG}"
         - name: RUN_TAG
           value: "${RUN_TAG}"
 ${TRAIN_ENV}
