@@ -28,7 +28,7 @@ deepMaze/
 ├── notebooks/    train_agent.ipynb — dual-mode (Colab/local) DRQN/DTQN trainer + curriculum cell
 ├── flows/        Prefect flows — retrain / promote / smoke-test
 ├── runpod/       Dockerfile + entrypoint + program.md (autonomous Claude self-improve)
-├── scripts/      train_runpod.py (standalone trainer) + setup-gh-secrets.sh
+├── scripts/      train_runpod.py (standalone trainer) + train_gce.sh (spot-T4 GPU) + train_vertex.sh (Vertex, quota-blocked) + setup-gh-secrets.sh
 ├── infra/        cloudrun/service.yaml · terraform/ (show-and-destroy IaC) · mlflow/ (REFERENCE only) · prefect/
 ├── docker/       entrypoint.sh (dev) + entrypoint.prod.sh (GCS asset sync + gunicorn) + sync_assets.py (ASSETS_PREFIX-aware)
 └── main.py       CLI entrypoint
@@ -61,6 +61,7 @@ deepMaze/
 | Memory strip (live) | `static/app.js drawMemory()` | per-step SSE; DRQN hidden state / DTQN attention row |
 | Live CLI tail | `recorders.TqdmTail` | `--live` or TTY |
 | Web viewer | `web/server.py` SSE + `static/app.js` | `--live_web`, `python web/server.py`, or `docker compose up` |
+| Value gradient + numbers (live) | `GET /api/policy_grid` (deep-copies the live env; never touches the training thread) → `app.js` overlay | every 10 episodes + at the post-training victory lap |
 
 ## Common commands
 
