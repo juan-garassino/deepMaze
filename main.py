@@ -73,6 +73,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--exploration_decay", type=float, default=None,
                    help="Per-EPISODE epsilon multiplier (default 0.995 → "
                         "floor ~ep 600/920; use 0.998 for 3000+ episode runs).")
+    p.add_argument("--learn_every", type=int, default=None,
+                   help="Gradient step every N env steps (drqn/dtqn; "
+                        "default 1 — use 4+ on CPU).")
     p.add_argument("--image_path", type=str, default=None,
                    help="Folder containing sprite sheet PNGs (e.g. sprites.png). "
                         "If omitted, placeholder colored tiles are used.")
@@ -143,6 +146,8 @@ def run(args):
         agent_kw["net"] = args.net
     if args.exploration_decay is not None:
         agent_kw["exploration_decay"] = args.exploration_decay
+    if args.learn_every is not None:
+        agent_kw["learn_every"] = args.learn_every
     agent = create_agent(args.agent_type, env, **agent_kw)
     if args.resume:
         _resume_agent(agent, args.resume, mgr)

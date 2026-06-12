@@ -160,6 +160,7 @@ suite trains only tiny tabular Q-agents on 5×5 mazes.
 | **Local** | Pipeline smoke-test (~2 min CPU) | `notebooks/train_agent.ipynb` (`NANO_LOCAL=True`) or `make local` | Auto-shrinks config to 8×8 maze / 200 eps. Verifies pipeline, NOT convergence. |
 | **Colab** | Real training, interactive | same notebook from Colab UI | Mounts Drive, file:// MLflow on Drive, see `notebooks/README.md`. |
 | **RunPod** | Real training, scriptable, autonomous | `runpod/Dockerfile` + `scripts/train_runpod.py` | Pattern from `005-products/020-autoresearch`. `make build push run`. Optional `CLAUDE_SELF_IMPROVE=true` mode runs Claude Code with `--dangerously-skip-permissions` after training, given `runpod/program.md` as the autonomous loop spec. `make improve API_KEY=sk-...`. |
+| **GCE spot T4** | Real training on GCP, cheapest GPU path (~$0.15/hr, self-deleting VM) | `make gpu-smoke` / `make gpu-train` → `scripts/train_gce.sh` | DLVM image + repo clone at boot; artifacts rsync to `gs://garassino-ml-artifacts/deepmaze/gce/<tag>/` every 5 min (spot-safe). Needs `GPUS-ALL-REGIONS ≥ 1` quota. `scripts/train_vertex.sh` is the Vertex AI variant (blocked until Vertex T4 training quota > 0). |
 
 ## Docker
 

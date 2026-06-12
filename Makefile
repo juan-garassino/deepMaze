@@ -88,6 +88,14 @@ push: build
 	@echo "Then: make runpod                  (train-only)"
 	@echo "   or: make runpod-improve API_KEY=sk-ant-...  (self-improve)"
 
+# GPU training on GCP — spot T4 VM (self-deleting; ~$0.15/hr while training).
+# Requires GPUS-ALL-REGIONS quota >= 1 (request filed via Cloud Quotas API).
+.PHONY: gpu-smoke gpu-train
+gpu-smoke:
+	SMOKE=1 bash scripts/train_gce.sh
+gpu-train:
+	bash scripts/train_gce.sh
+
 # Cloud Run inference image (Dockerfile.prod → ghcr.io/.../deepmaze-backend).
 # Needed before the FIRST `terraform apply` — CI builds it on merge after that.
 .PHONY: push-backend
