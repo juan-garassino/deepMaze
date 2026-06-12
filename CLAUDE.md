@@ -18,12 +18,12 @@ Ported and modernized from two local references; **do not** edit those reference
 
 ```
 deepMaze/
-├── agents/       base_agent / q_agent / dqn_agent / ppo_agent / drqn_agent / dtqn_agent / nets / encoders
+├── agents/       base_agent / recurrent (DRQN+DTQN shared base) / q_agent / dqn_agent / ppo_agent / drqn_agent / dtqn_agent / nets / encoders
 ├── config/       hyperparameters.py — per-agent default dataclasses (defaults_for)
-├── environment/  maze.py — MazeEnvironment + RenderMaze
-├── training/     train.py + recorders.py
+├── environment/  maze.py — MazeEnvironment · render.py — RenderMaze (re-exported from maze)
+├── training/     train.py + recorders.py + session.py (shared train→eval→bundle cycle)
 ├── tests/        pytest suite
-├── utils/        manager.py + viz_events.py + visualizations.py + replay_buffer.py + episode_buffer.py
+├── utils/        manager.py + viz_events.py + visualizations.py + replay_buffer.py + episode_buffer.py + bundles.py
 ├── web/          FastAPI server + static/ + otel.py (Cloud Trace instrumentation)
 ├── notebooks/    train_agent.ipynb — dual-mode (Colab/local) DRQN/DTQN trainer + curriculum cell
 ├── flows/        Prefect flows — retrain / promote / smoke-test
